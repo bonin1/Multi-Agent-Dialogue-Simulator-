@@ -28,7 +28,17 @@ MANIFEST
 /test_*
 /cache
 /data
-/models
+
+# Multi-Agent Simulator specific
+memory_db/
+logs/
+exports/
+models/downloaded/
+*.log
+example_simulation_*.json
+venv/
+.streamlit/
+/models/downloaded
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
