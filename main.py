@@ -18,6 +18,8 @@ try:
     from agents.agent import Agent
     from models.agent_models import AgentRole, PersonalityTrait, EmotionalState, EmotionType
     from scenarios.scenario_manager import ScenarioManager, AGENT_CONFIGS, SCENARIOS
+    from ui.agent_creator_ui import show_agent_creator_ui
+    from agents.agent_creator import AgentCreator
 except ImportError as e:
     st.error(f"Error importing modules: {e}")
     st.error("Please install required dependencies: pip install -r requirements.txt")
@@ -42,8 +44,16 @@ if 'conversation_history' not in st.session_state:
     st.session_state.conversation_history = []
 if 'simulation_running' not in st.session_state:
     st.session_state.simulation_running = False
+if 'continuous_mode' not in st.session_state:
+    st.session_state.continuous_mode = False
 if 'turn_count' not in st.session_state:
     st.session_state.turn_count = 0
+if 'agent_creator' not in st.session_state:
+    st.session_state.agent_creator = AgentCreator()
+if 'auto_turn_interval' not in st.session_state:
+    st.session_state.auto_turn_interval = 3
+if 'auto_turn_interval' not in st.session_state:
+    st.session_state.auto_turn_interval = 3
 
 def load_model():
     """Load the language model"""
@@ -154,6 +164,20 @@ def main():
     st.title("🤖 Autonomous Multi-Agent Dialogue Simulator")
     st.markdown("*Simulate complex multi-agent conversations with AI entities that have memory, emotions, and distinct personalities.*")
     
+    # Main navigation
+    tab1, tab2, tab3 = st.tabs(["💬 Simulation", "🛠️ Create Agents", "📊 Analytics"])
+    
+    with tab1:
+        show_simulation_interface()
+    
+    with tab2:
+        show_agent_creator_interface()
+    
+    with tab3:
+        show_analytics_interface()
+
+def show_simulation_interface():
+    """Show the main simulation interface"""
     # Sidebar for configuration
     with st.sidebar:
         st.header("Configuration")
@@ -197,27 +221,93 @@ def main():
         
         # Agent selection
         st.subheader("Agent Selection")
-        available_agents = list(AGENT_CONFIGS.keys())
+        
+        # Get all available agents (predefined + custom)
+        all_available_agents = get_all_available_agents()
+        available_agent_names = list(all_available_agents.keys())
+        
+        # Separate predefined and custom agents for display
+        predefined_agents = [name for name in available_agent_names if name in AGENT_CONFIGS]
+        custom_agents = [name for name in available_agent_names if name not in AGENT_CONFIGS]
+        
+        if custom_agents:
+            st.write(f"**Available agents:** {len(predefined_agents)} predefined + {len(custom_agents)} custom")
+        else:
+            st.write(f"**Available agents:** {len(predefined_agents)} predefined")
+            st.info("💡 Create custom agents in the 'Create Agents' tab!")
         
         if selected_scenario and selected_scenario in SCENARIOS:
             suggested_agents = SCENARIOS[selected_scenario].get('suggested_agents', [])
-            st.write("**Suggested agents:**")
+            st.write("**Suggested agents for this scenario:**")
             for agent in suggested_agents:
-                st.write(f"• {agent}")
+                agent_type = "predefined" if agent in AGENT_CONFIGS else "custom" if agent in all_available_agents else "missing"
+                if agent_type == "missing":
+                    st.write(f"• ⚠️ {agent} (not available)")
+                else:
+                    st.write(f"• {agent} ({agent_type})")
         
-        selected_agents = st.multiselect(
-            "Select Agents (2-5 recommended)",
-            available_agents,
-            default=SCENARIOS[selected_scenario].get('suggested_agents', [])[:3] if selected_scenario else []
-        )
+        # Agent selection with better organization
+        if custom_agents:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write("**Predefined Agents:**")
+                selected_predefined = st.multiselect(
+                    "Choose predefined agents",
+                    predefined_agents,
+                    default=[],
+                    key="predefined_agents"
+                )
+            with col2:
+                st.write("**Your Custom Agents:**")
+                selected_custom = st.multiselect(
+                    "Choose custom agents",
+                    custom_agents,
+                    default=[],
+                    key="custom_agents"
+                )
+            selected_agents = selected_predefined + selected_custom
+        else:
+            selected_agents = st.multiselect(
+                "Select Agents (2-5 recommended)",
+                available_agent_names,
+                default=SCENARIOS[selected_scenario].get('suggested_agents', [])[:3] if selected_scenario else []
+            )
         
-        if st.button("Create Agents") and st.session_state.model_manager:
-            st.session_state.agents = {}
+        # Show selected agents info
+        if selected_agents:
+            st.write(f"**Selected:** {len(selected_agents)} agents")
             for agent_name in selected_agents:
-                agent = create_agent(agent_name, AGENT_CONFIGS[agent_name])
-                if agent:
-                    st.session_state.agents[agent_name] = agent
-            st.success(f"Created {len(st.session_state.agents)} agents")
+                agent_config = all_available_agents[agent_name]
+                agent_type = "🎭 Custom" if 'custom_config' in agent_config else "🤖 Predefined"
+                
+                # Extract role properly for both custom and predefined agents
+                if 'custom_config' in agent_config:
+                    # Custom agent - get role from the CustomAgentConfig object
+                    role = agent_config['custom_config'].role
+                else:
+                    # Predefined agent - get role from dictionary
+                    role = agent_config.get('role', 'Unknown')
+                
+                st.write(f"  • {agent_type} {agent_name} ({role})")
+        
+        if st.button("Create Agents") and st.session_state.model_manager and selected_agents:
+            st.session_state.agents = {}
+            success_count = 0
+            
+            with st.spinner("Creating agents..."):
+                for agent_name in selected_agents:
+                    agent_config = all_available_agents[agent_name]
+                    agent = create_agent_from_config(agent_name, agent_config)
+                    if agent:
+                        st.session_state.agents[agent_name] = agent
+                        success_count += 1
+                    else:
+                        st.error(f"Failed to create agent: {agent_name}")
+            
+            if success_count > 0:
+                st.success(f"✅ Created {success_count} agents successfully!")
+            else:
+                st.error("❌ No agents were created successfully")
         
         st.divider()
         
@@ -241,6 +331,26 @@ def main():
                 else:
                     st.warning("⚠️ No scenario selected. You can still start a free-form conversation.")
                 
+                # Simulation mode selection
+                st.subheader("Simulation Mode")
+                mode = st.radio(
+                    "Choose simulation mode:",
+                    ["Manual Turn-by-Turn", "Continuous Auto-Play"],
+                    help="Manual: Click 'Next Turn' for each response. Continuous: Agents talk automatically."
+                )
+                
+                if mode == "Continuous Auto-Play":
+                    st.session_state.continuous_mode = True
+                    st.session_state.auto_turn_interval = st.slider(
+                        "Seconds between turns:", 
+                        min_value=1, 
+                        max_value=10, 
+                        value=3,
+                        help="How long to wait between agent responses"
+                    )
+                else:
+                    st.session_state.continuous_mode = False
+                
                 if st.button("Start Simulation", type="primary"):
                     st.session_state.simulation_running = True
                     st.session_state.turn_count = 0
@@ -257,21 +367,43 @@ def main():
                     })
                     st.rerun()
             else:
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("Next Turn"):
-                        simulate_turn()
-                        st.rerun()
-                with col2:
-                    if st.button("Stop"):
-                        st.session_state.simulation_running = False
-                        st.rerun()
+                # Show current mode
+                mode_text = "🔄 Continuous Mode" if st.session_state.continuous_mode else "👆 Manual Mode"
+                st.info(f"**Active Mode:** {mode_text}")
+                
+                if st.session_state.continuous_mode:
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("⏸️ Pause", type="secondary"):
+                            st.session_state.continuous_mode = False
+                            st.rerun()
+                    with col2:
+                        if st.button("🛑 Stop Simulation", type="primary"):
+                            st.session_state.simulation_running = False
+                            st.session_state.continuous_mode = False
+                            st.rerun()
+                    
+                    st.write(f"⏱️ Auto-turn every {st.session_state.auto_turn_interval} seconds")
+                    
+                else:
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        if st.button("▶️ Next Turn"):
+                            simulate_turn()
+                            st.rerun()
+                    with col2:
+                        if st.button("🔄 Resume Auto", type="secondary"):
+                            st.session_state.continuous_mode = True
+                            st.rerun()
+                    with col3:
+                        if st.button("🛑 Stop"):
+                            st.session_state.simulation_running = False
+                            st.rerun()
                 
                 # Only show phase advance if we have a scenario
                 if current_context and current_context.get('current_phase'):
-                    if st.button("Advance Phase"):
+                    if st.button("⏭️ Advance Phase"):
                         st.session_state.scenario_manager.advance_phase()
-                        updated_context = st.session_state.scenario_manager.get_current_context()
                         phase_prompt = st.session_state.scenario_manager.get_phase_transition_prompt()
                         st.session_state.conversation_history.append({
                             'speaker': 'System',
@@ -465,5 +597,203 @@ def simulate_turn():
         st.error(f"Error generating response from {current_speaker_name}: {e}")
         st.error(traceback.format_exc())
 
+def show_agent_creator_interface():
+    """Show the agent creator interface"""
+    try:
+        show_agent_creator_ui()
+    except Exception as e:
+        st.error(f"Error in agent creator: {e}")
+        st.write("Fallback: Basic agent creator")
+        show_basic_agent_creator()
+
+def show_basic_agent_creator():
+    """Basic agent creator as fallback"""
+    st.header("🛠️ Custom Agent Creator")
+    st.info("Create your own custom agents with unique personalities!")
+    
+    with st.form("basic_agent_creator"):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            agent_name = st.text_input("Agent Name", placeholder="e.g., Dr. Alex Smith")
+            agent_role = st.selectbox("Role", ["custom", "doctor", "engineer", "scientist", "teacher", "journalist"])
+            agent_description = st.text_area("Description", placeholder="Describe your agent...")
+        
+        with col2:
+            st.subheader("Personality Traits")
+            openness = st.slider("Openness", 0.0, 1.0, 0.5)
+            conscientiousness = st.slider("Conscientiousness", 0.0, 1.0, 0.5)
+            extraversion = st.slider("Extraversion", 0.0, 1.0, 0.5)
+            agreeableness = st.slider("Agreeableness", 0.0, 1.0, 0.5)
+            neuroticism = st.slider("Neuroticism", 0.0, 1.0, 0.5)
+        
+        background_story = st.text_area("Background Story", placeholder="Tell us about your agent's history...")
+        goals = st.text_area("Goals (one per line)", placeholder="Help people\nSolve problems\nLearn new things")
+        
+        if st.form_submit_button("Create Agent"):
+            if agent_name and agent_description:
+                # Create basic agent config
+                try:
+                    if 'custom_agents' not in st.session_state:
+                        st.session_state.custom_agents = {}
+                    
+                    config = {
+                        'name': agent_name,
+                        'role': agent_role,
+                        'description': agent_description,
+                        'background': background_story,
+                        'personality': {
+                            'openness': openness,
+                            'conscientiousness': conscientiousness,
+                            'extraversion': extraversion,
+                            'agreeableness': agreeableness,
+                            'neuroticism': neuroticism
+                        },
+                        'goals': [goal.strip() for goal in goals.split('\n') if goal.strip()]
+                    }
+                    
+                    st.session_state.custom_agents[agent_name] = config
+                    st.success(f"✅ Created agent: {agent_name}")
+                    
+                except Exception as e:
+                    st.error(f"Error creating agent: {e}")
+            else:
+                st.error("Please fill in at least the name and description")
+    
+    # Show created agents
+    if 'custom_agents' in st.session_state and st.session_state.custom_agents:
+        st.subheader("📚 Your Custom Agents")
+        for name, config in st.session_state.custom_agents.items():
+            with st.expander(f"🤖 {name}"):
+                st.write(f"**Role:** {config['role']}")
+                st.write(f"**Description:** {config['description']}")
+                if config.get('goals'):
+                    st.write("**Goals:**")
+                    for goal in config['goals']:
+                        st.write(f"• {goal}")
+
+def show_analytics_interface():
+    """Show conversation analytics"""
+    st.header("📊 Conversation Analytics")
+    
+    if not st.session_state.conversation_history:
+        st.info("No conversation data available. Start a simulation to see analytics!")
+        return
+    
+    # Basic analytics
+    df = pd.DataFrame(st.session_state.conversation_history)
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Total Messages", len(df))
+    
+    with col2:
+        unique_speakers = df['speaker'].nunique()
+        st.metric("Active Agents", unique_speakers)
+    
+    with col3:
+        if len(df) > 0:
+            avg_length = df['message'].str.len().mean()
+            st.metric("Avg Message Length", f"{avg_length:.0f} chars")
+    
+    # Speaker distribution
+    if len(df) > 0:
+        speaker_counts = df['speaker'].value_counts()
+        
+        fig = px.bar(
+            x=speaker_counts.index, 
+            y=speaker_counts.values,
+            labels={'x': 'Agent', 'y': 'Message Count'},
+            title="Messages per Agent"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Recent conversation timeline
+        if len(df) > 10:
+            recent_df = df.tail(20)
+            fig2 = px.timeline(
+                recent_df, 
+                x_start="timestamp", 
+                x_end="timestamp",
+                y="speaker",
+                title="Recent Conversation Timeline"
+            )
+            st.plotly_chart(fig2, use_container_width=True)
+    
+    # Agent emotional states
+    if st.session_state.agents:
+        st.subheader("🎭 Current Agent States")
+        
+        for agent_name, agent in st.session_state.agents.items():
+            with st.expander(f"🤖 {agent_name}"):
+                summary = agent.get_agent_summary()
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write(f"**Emotion:** {summary['emotional_state']['emotion']}")
+                    st.write(f"**Intensity:** {summary['emotional_state']['intensity']:.2f}")
+                
+                with col2:
+                    if summary.get('recent_reflections'):
+                        st.write("**Recent Thoughts:**")
+                        for reflection in summary['recent_reflections']:
+                            st.write(f"• {reflection}")
+
+def get_all_available_agents():
+    """Get all available agents (predefined + custom)"""
+    all_agents = {}
+    
+    # Add predefined agents
+    all_agents.update(AGENT_CONFIGS)
+    
+    # Add custom agents
+    try:
+        creator = st.session_state.agent_creator
+        custom_agents = creator.list_saved_agents()
+        
+        for custom_agent in custom_agents:
+            try:
+                config = creator.load_agent_config(custom_agent['filename'])
+                # Convert custom agent config to format compatible with create_agent
+                agent_config = {
+                    'role': config.role,
+                    'personality': config.personality_traits,
+                    'background': config.background_story,
+                    'goals': config.goals,
+                    'custom_config': config  # Store full config for custom agents
+                }
+                all_agents[config.name] = agent_config
+            except Exception as e:
+                st.warning(f"Could not load custom agent {custom_agent['name']}: {e}")
+    except Exception as e:
+        st.error(f"Error loading custom agents: {e}")
+    
+    return all_agents
+
+def create_agent_from_config(name: str, config: Dict[str, Any]) -> Optional[Agent]:
+    """Create an agent from either predefined or custom configuration"""
+    try:
+        # Check if this is a custom agent
+        if 'custom_config' in config:
+            custom_config = config['custom_config']
+            return st.session_state.agent_creator.create_custom_agent(
+                custom_config, 
+                st.session_state.model_manager
+            )
+        else:
+            # Use existing create_agent function for predefined agents
+            return create_agent(name, config)
+    except Exception as e:
+        st.error(f"Error creating agent {name}: {e}")
+        return None
+
 if __name__ == "__main__":
     main()
+    
+    # Auto-refresh for continuous mode
+    if (st.session_state.get('simulation_running', False) and 
+        st.session_state.get('continuous_mode', False)):
+        time.sleep(st.session_state.get('auto_turn_interval', 3))
+        simulate_turn()
+        st.rerun()

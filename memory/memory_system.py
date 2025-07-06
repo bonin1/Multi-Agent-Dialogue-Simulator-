@@ -150,9 +150,14 @@ class MemorySystem:
         
         for mem_type, collection in target_collections.items():
             try:
+                # Check if collection exists and has documents
+                count = collection.count()
+                if count == 0:
+                    continue
+                    
                 results = collection.query(
                     query_embeddings=[query_embedding],
-                    n_results=min(n_results, collection.count() if collection.count() > 0 else 1)
+                    n_results=min(n_results, count)
                 )
                 
                 if results['documents'] and results['documents'][0]:
@@ -166,6 +171,7 @@ class MemorySystem:
                         all_results.append(memory_item)
             except Exception as e:
                 logging.warning(f"Error retrieving from {mem_type} collection: {e}")
+                # Return empty results if ChromaDB has issues
                 continue
         
         # Sort by relevance (lower distance = higher relevance)
@@ -191,7 +197,8 @@ class MemorySystem:
             
             conversations_with_time.sort(key=lambda x: x['timestamp'], reverse=True)
             return conversations_with_time[:n_recent]
-        except:
+        except Exception as e:
+            logging.warning(f"Error getting recent conversations: {e}")
             return []
     
     def reflect_on_memories(self, reflection_prompt: str) -> str:
@@ -222,7 +229,7 @@ class MemorySystem:
         for name, collection in collections.items():
             try:
                 stats[name] = collection.count()
-            except:
+            except Exception:
                 stats[name] = 0
         
         return stats

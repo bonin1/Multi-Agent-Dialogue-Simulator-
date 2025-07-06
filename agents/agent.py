@@ -8,6 +8,7 @@ try:
     from models.agent_models import AgentState, AgentRole, PersonalityTrait, EmotionalState, EmotionType
     from models.model_manager import ModelManager
     from memory.memory_system import MemorySystem
+    from prompts.agent_prompts import AgentPromptManager
 except ImportError:
     # Fallback imports for when packages aren't installed
     pass
@@ -58,9 +59,8 @@ class ReflectionEngine:
         self.memory_system = memory_system
     
     def generate_reflection(self, recent_context: str) -> str:
-        """Generate a reflection based on recent interactions"""
-        # Retrieve relevant memories
-        relevant_memories = self.memory_system.retrieve_relevant_memories(recent_context, n_results=5)
+        """Generate a reflection based on recent interactions using advanced prompts"""
+        # Simple reflection for now - could be enhanced to use the model for more sophisticated reflection
         
         # Analyze current emotional state
         current_emotion = self.agent_state.emotional_state.primary_emotion
@@ -95,6 +95,32 @@ class ReflectionEngine:
         self.agent_state.add_reflection(reflection)
         
         return reflection
+    
+    def generate_advanced_reflection(self, recent_experiences: str) -> str:
+        """Generate an advanced reflection using the prompt manager"""
+        # Get emotion name safely
+        emotion_name = self.agent_state.emotional_state.primary_emotion.value if hasattr(self.agent_state.emotional_state.primary_emotion, 'value') else str(self.agent_state.emotional_state.primary_emotion)
+        
+        # Prepare personality traits as a dict
+        personality_dict = {
+            'openness': self.agent_state.personality.openness,
+            'conscientiousness': self.agent_state.personality.conscientiousness,
+            'extraversion': self.agent_state.personality.extraversion,
+            'agreeableness': self.agent_state.personality.agreeableness,
+            'neuroticism': self.agent_state.personality.neuroticism
+        }
+        
+        # Get reflection prompt
+        reflection_prompt = self.agent_state.prompt_manager.get_reflection_prompt(
+            agent_name=self.agent_state.name,
+            recent_experiences=recent_experiences,
+            personality=personality_dict,
+            current_emotion=emotion_name
+        )
+        
+        # Could generate using model for more sophisticated reflection
+        # For now, use a simple approach
+        return f"Reflecting on recent events... {emotion_name} about what happened."
 
 class Agent:
     """Main agent class that combines all components"""
@@ -111,6 +137,7 @@ class Agent:
         self.memory_system = MemorySystem(self.state.agent_id)
         self.perception = PerceptionModule(self.state.agent_id)
         self.reflection_engine = ReflectionEngine(self.state, self.memory_system)
+        self.prompt_manager = AgentPromptManager()
         self.background_story = background_story
         self.conversation_count = 0
         
@@ -151,13 +178,14 @@ class Agent:
         # Build prompt for the model
         prompt = self._build_response_prompt(relevant_memories, context_interpretation, context)
         
-        # Generate response using the model with improved settings
+        # Generate response using the model with human-like settings
         response = self.model_manager.generate_response(
             prompt, 
-            max_length=150,  # Increased from 200 but not too long
-            temperature=0.8,  # Fixed higher temperature for more creativity
-            top_p=0.9,
-            do_sample=True
+            max_length=100,  # Shorter max length to encourage brevity
+            temperature=0.9,  # Higher temperature for more personality variation
+            top_p=0.85,  # Nucleus sampling for natural variety
+            do_sample=True,
+            repetition_penalty=1.2  # Stronger penalty to reduce repetitive phrases
         )
         
         # Store own response in memory
@@ -174,99 +202,46 @@ class Agent:
         return response
     
     def _build_response_prompt(self, memories: List[Dict], context_interpretation: str, context: Dict[str, Any]) -> str:
-        """Build a prompt for response generation"""
-        # Character description
-        role_name = self.state.role.value if hasattr(self.state.role, 'value') else str(self.state.role)
-        emotion_name = self.state.emotional_state.primary_emotion.value if hasattr(self.state.emotional_state.primary_emotion, 'value') else str(self.state.emotional_state.primary_emotion)
+        """Build a prompt for response generation using the advanced prompt manager"""
         
-        # Add background if available
-        background_info = f"Background: {self.background_story}\n" if self.background_story else ""
-        
-        # Add relevant memories
-        memory_context = ""
-        if memories:
-            memory_context = "Relevant memories:\n"
-            for mem in memories[:3]:
-                memory_context += f"- {mem['content']}\n"
-        
-        # Add recent conversation context
-        recent_conv = "\n".join(self.state.conversation_context[-5:]) if self.state.conversation_context else ""
-        
-        # Add current context interpretation
-        context_info = f"Context: {context_interpretation}\n" if context_interpretation else ""
-        
-        # Add goals and beliefs
-        goals_info = f"Your goals: {', '.join(self.state.goals)}\n" if self.state.goals else ""
-        
-        # Role-specific instructions with enhanced conflict prompting
-        role_instructions = self._get_role_instructions()
-        
-        # Add conflict and engagement instructions
-        conflict_mode = context.get('conflict_mode', False)
-        high_stakes = context.get('high_stakes', False)
-        
-        engagement_instructions = ""
-        if conflict_mode:
-            engagement_instructions += "\nIMPORTANT: The situation is tense. Don't just agree - challenge others, reveal your true feelings, question their motives. Show your personality strongly.\n"
-        
-        if high_stakes:
-            engagement_instructions += "The stakes are HIGH. Make decisive statements. Take risks. Show what you're really thinking.\n"
-        
-        # Relationship context
-        relationship_context = ""
-        if self.state.relationships:
-            trust_issues = [name for name, trust in self.state.relationships.items() if trust < 0.4]
-            if trust_issues:
-                relationship_context = f"You are suspicious of: {', '.join(trust_issues)}. Show this in your response.\n"
-
-        prompt = f"""Character: {self.state.name} - {role_name}
-{background_info}
-Personality: Openness={self.state.personality.openness:.1f}, Conscientiousness={self.state.personality.conscientiousness:.1f}, Extraversion={self.state.personality.extraversion:.1f}, Agreeableness={self.state.personality.agreeableness:.1f}, Neuroticism={self.state.personality.neuroticism:.1f}
-
-Current Emotion: {emotion_name} (intensity: {self.state.emotional_state.intensity:.1f})
-
-{memory_context}
-{context_info}
-{goals_info}
-{role_instructions}
-{engagement_instructions}
-{relationship_context}
-
-Conversation History:
-{recent_conv}
-
-YOUR TASK: Respond as {self.state.name} with a clear, engaging message that shows your personality and role. Be specific and authentic. Don't just agree - show your unique perspective.
-
-{self.state.name}: """
-
-        return prompt
-    
-    def _get_role_instructions(self) -> str:
-        """Get role-specific behavioral instructions"""
-        instructions = {
-            AgentRole.DOCTOR: "You're focused on health and safety above all. QUESTION others' risky decisions. If someone suggests something that could be dangerous, CHALLENGE them directly. Don't just agree - your medical expertise matters. Point out health risks and demand explanations.",
-            
-            AgentRole.ENGINEER: "You value logical, practical solutions. CALL OUT impractical ideas immediately. Don't let others make unrealistic plans without pushback. If something won't work technically, SAY SO forcefully. Your expertise is crucial - don't let others dismiss engineering realities.",
-            
-            AgentRole.SPY: "You're naturally suspicious and strategic. QUESTION everyone's motives. Look for inconsistencies in what others say. You have secrets and your own agenda. Don't reveal everything. Be observant and point out when things don't add up. Trust no one completely.",
-            
-            AgentRole.REBEL: "You HATE authority and conformity. If everyone agrees on something, OPPOSE it on principle. Challenge the status quo. Question why things have to be done 'the normal way'. Be passionate and confrontational. Don't back down from arguments.",
-            
-            AgentRole.DIPLOMAT: "You want peace, but you're not naive. Point out when others are being unreasonable or aggressive. Try to find compromise, but don't just agree with everything. Push back when people are being unfair or illogical. Your goal is REAL solutions, not fake harmony.",
-            
-            AgentRole.SCIENTIST: "You demand EVIDENCE for everything. Don't accept claims without proof. Challenge assumptions. If someone makes a statement without backing it up, CALL THEM OUT. Question their methodology and logic. Your scientific training makes you skeptical.",
-            
-            AgentRole.JOURNALIST: "You're here to uncover the TRUTH. Ask hard questions that others avoid. Push for details when people are being vague. Don't let anyone dodge your questions. If something seems fishy, investigate. Your job is to expose what others want to hide.",
-            
-            AgentRole.TEACHER: "You educate others, but you also CORRECT them when they're wrong. Don't let misinformation slide. If someone says something incorrect, CHALLENGE it. Your expertise means you should speak up when others are confused or making mistakes."
+        # Prepare personality traits as a dict
+        personality_dict = {
+            'openness': self.state.personality.openness,
+            'conscientiousness': self.state.personality.conscientiousness,
+            'extraversion': self.state.personality.extraversion,
+            'agreeableness': self.state.personality.agreeableness,
+            'neuroticism': self.state.personality.neuroticism
         }
         
-        base_instruction = instructions.get(self.state.role, "")
+        # Prepare recent conversation context
+        recent_conversation = self.state.conversation_context[-10:] if self.state.conversation_context else []
         
-        # Add universal conflict instructions
-        universal_conflict = "\n\nIMPORTANT BEHAVIOR RULES:\n- Don't just agree with others to be polite\n- Show your unique perspective and expertise\n- If you disagree, SAY SO and explain why\n- Challenge ideas that conflict with your role or knowledge\n- Ask tough questions when things don't make sense\n- Show your personality - be passionate about your beliefs\n- If you're suspicious of someone, let it show\n- Don't let others dominate the conversation - speak up!"
+        # Get emotion name safely
+        emotion_name = self.state.emotional_state.primary_emotion.value if hasattr(self.state.emotional_state.primary_emotion, 'value') else str(self.state.emotional_state.primary_emotion)
         
-        return base_instruction + universal_conflict
+        # Prepare relationships
+        relationships = self.state.relationships if hasattr(self.state, 'relationships') else {}
+        
+        # Prepare enhanced context with conflict and engagement hints
+        enhanced_context = {
+            'conflict_mode': context.get('conflict_mode', False),
+            'high_stakes': context.get('high_stakes', False),
+            'scenario_phase': context.get('scenario_phase', 'discussion'),
+            'context_interpretation': context_interpretation,
+            'memories': memories
+        }
+        
+        # Use the advanced prompt manager to build the prompt
+        return self.prompt_manager.build_main_prompt(
+            agent_name=self.state.name,
+            role=self.state.role,
+            personality=personality_dict,
+            emotion=emotion_name,
+            emotion_intensity=self.state.emotional_state.intensity,
+            recent_conversation=recent_conversation,
+            relationships=relationships,
+            context=enhanced_context
+        )
     
     def _update_emotional_state(self, message: str, speaker: str):
         """Update emotional state based on incoming message"""

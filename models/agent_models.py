@@ -25,6 +25,7 @@ class AgentRole(str, Enum):
     SCIENTIST = "scientist"
     JOURNALIST = "journalist"
     TEACHER = "teacher"
+    CUSTOM = "custom"
 
 class PersonalityTrait(BaseModel):
     openness: float = Field(ge=0, le=1, description="Open to new experiences")

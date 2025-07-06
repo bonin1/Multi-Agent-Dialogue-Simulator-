@@ -69,7 +69,8 @@ class ModelManager:
                          max_length: int = 512, 
                          temperature: float = 0.7,
                          top_p: float = 0.9,
-                         do_sample: bool = True) -> str:
+                         do_sample: bool = True,
+                         repetition_penalty: float = 1.1) -> str:
         """Generate a response using the loaded model"""
         try:
             # Tokenize input
@@ -86,7 +87,7 @@ class ModelManager:
                     do_sample=do_sample,
                     pad_token_id=self.tokenizer.eos_token_id,
                     eos_token_id=self.tokenizer.eos_token_id,
-                    repetition_penalty=1.1
+                    repetition_penalty=repetition_penalty
                 )
             
             # Decode response

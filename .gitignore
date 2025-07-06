@@ -64,6 +64,8 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 cover/
+/debug_*
+/custom_agents
 
 # Translations
 *.mo
