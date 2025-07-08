@@ -181,18 +181,21 @@ class Agent:
         # Generate response using the model with human-like settings
         response = self.model_manager.generate_response(
             prompt, 
-            max_length=100,  # Shorter max length to encourage brevity
-            temperature=0.9,  # Higher temperature for more personality variation
-            top_p=0.85,  # Nucleus sampling for natural variety
+            max_length=200,  # Increased for more complete responses
+            temperature=0.8,  # Balanced for personality while staying coherent
+            top_p=0.9,  # Increased for more variety
             do_sample=True,
-            repetition_penalty=1.2  # Stronger penalty to reduce repetitive phrases
+            repetition_penalty=1.3  # Higher penalty to reduce repetition
         )
+        
+        # Clean up response formatting
+        response = self._clean_response(response)
         
         # Store own response in memory
         self.memory_system.store_conversation(response, self.state.name, context)
         
-        # Update emotional state based on own response
-        self._update_emotional_state_self(response)
+        # Update emotional state based on conversation content
+        self._update_emotional_state_from_context(context)
         
         # Trigger reflection every few turns
         if self.conversation_count % 3 == 0:
@@ -257,6 +260,98 @@ class Agent:
         elif any(word in message_lower for word in ['suspicious', 'doubt', 'trust']):
             self.state.emotional_state.update_emotion(EmotionType.SUSPICIOUS, 0.7, f"Response to {speaker}")
     
+    def _clean_response(self, response: str) -> str:
+        """Clean up the response to remove formatting artifacts"""
+        # Remove bullet points and structural formatting
+        response = response.strip()
+        
+        # Remove bullet points at the start
+        if response.startswith('- '):
+            response = response[2:].strip()
+        
+        # Remove numbered lists at the start
+        if response and response[0].isdigit() and '. ' in response[:5]:
+            first_dot = response.find('. ')
+            if first_dot != -1:
+                response = response[first_dot + 2:].strip()
+        
+        # Remove character count indicators
+        if 'characters remaining' in response:
+            lines = response.split('\n')
+            response = '\n'.join([line for line in lines if 'characters remaining' not in line])
+        
+        # Remove structural markers
+        response = response.replace('[to ', '').replace('] ', '')
+        response = response.replace('**', '').replace('***', '')
+        
+        # Ensure it doesn't start with quotes unless it's actual dialogue
+        if response.startswith('"') and response.count('"') == 1:
+            response = response[1:]
+        
+        # Remove incomplete sentences at the end
+        if response and not response[-1] in '.!?':
+            # Find the last complete sentence
+            last_punct = max(
+                response.rfind('.'),
+                response.rfind('!'),
+                response.rfind('?')
+            )
+            if last_punct > len(response) * 0.6:  # Only if it's not too short
+                response = response[:last_punct + 1]
+        
+        return response.strip()
+    
+    def _update_emotional_state_from_context(self, context: Dict[str, Any]):
+        """Update emotional state based on conversation context"""
+        import random
+        
+        # Get the scenario context
+        scenario_phase = context.get('scenario_phase', '')
+        recent_messages = context.get('recent_messages', [])
+        
+        # Analyze recent conversation for emotional triggers
+        if recent_messages:
+            last_messages = [msg.get('message', '') for msg in recent_messages[-2:]]
+            combined_text = ' '.join(last_messages).lower()
+            
+            # Role-specific emotional triggers
+            if self.state.role == AgentRole.REBEL:
+                if any(word in combined_text for word in ['compromise', 'gradual', 'slow', 'economic concerns']):
+                    self._set_emotion(EmotionType.FRUSTRATED, 0.7, "Frustrated by slow action")
+                elif any(word in combined_text for word in ['bold', 'immediate', 'action', 'justice']):
+                    self._set_emotion(EmotionType.EXCITED, 0.6, "Excited about bold action")
+            
+            elif self.state.role == AgentRole.SCIENTIST:
+                if any(word in combined_text for word in ['data', 'evidence', 'study', 'research']):
+                    self._set_emotion(EmotionType.CONFIDENT, 0.6, "Confident in data")
+                elif any(word in combined_text for word in ['ignore', 'dismiss', 'politics']):
+                    self._set_emotion(EmotionType.FRUSTRATED, 0.7, "Frustrated by politics over science")
+            
+            elif self.state.role == AgentRole.DIPLOMAT:
+                if any(word in combined_text for word in ['agreement', 'compromise', 'together']):
+                    self._set_emotion(EmotionType.HAPPY, 0.6, "Happy about collaboration")
+                elif any(word in combined_text for word in ['conflict', 'disagreement', 'impossible']):
+                    self._set_emotion(EmotionType.ANXIOUS, 0.6, "Anxious about breakdown")
+            
+            # General emotional responses
+            if any(word in combined_text for word in ['deaths', 'dying', 'crisis', 'catastrophe']):
+                if random.random() < 0.7:  # 70% chance to react emotionally
+                    self._set_emotion(EmotionType.SAD, 0.6, "Sad about human cost")
+            
+            elif any(word in combined_text for word in ['jobs', 'economy', 'unemployment']):
+                if self.state.personality.conscientiousness > 0.6:
+                    self._set_emotion(EmotionType.ANXIOUS, 0.5, "Anxious about economic impact")
+        
+        # Gradual emotional decay toward neutral
+        current_intensity = self.state.emotional_state.intensity
+        if current_intensity > 0.1:
+            new_intensity = max(0.1, current_intensity - 0.1)
+            self.state.emotional_state.intensity = new_intensity
+    
+    def _set_emotion(self, emotion_type: EmotionType, intensity: float, reason: str):
+        """Set a specific emotion with intensity"""
+        self.state.emotional_state.update_emotion(emotion_type, intensity, reason)
+
     def _update_emotional_state_self(self, _own_message: str):
         """Update emotional state based on own response"""
         if self.state.personality.neuroticism > 0.7:

@@ -147,7 +147,7 @@ def run_continuous_simulation():
         
         # Initialize scenario manager
         scenario_manager = ScenarioManager()
-        scenario_manager.set_scenario("Corporate Espionage")  # More dramatic scenario
+        scenario_manager.set_scenario("Corporate Espionage") 
         
         # Create agents
         print("\n🎭 Creating agents...")
