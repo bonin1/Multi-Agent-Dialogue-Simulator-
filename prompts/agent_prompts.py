@@ -257,37 +257,71 @@ Express sadness or disappointment:
     def build_main_prompt(self, agent_name: str, role: AgentRole, personality: Dict[str, float], 
                          emotion: str, emotion_intensity: float, recent_conversation: List[str],
                          relationships: Dict[str, float] = None, context: Dict[str, Any] = None) -> str:
-        """Build a concise, effective conversation prompt"""
+        """Build a conversation prompt that prioritizes natural response flow"""
         
         # Get role-specific persona
         persona = self.role_personas.get(role, {})
         
-        # Get last 2 messages for context
-        recent_messages = recent_conversation[-3:] if recent_conversation else []
+        # Get the most recent speaker and their message for direct response
+        last_speaker = None
+        last_message = None
+        if recent_conversation and len(recent_conversation) >= 1:
+            last_entry = recent_conversation[-1]
+            if ": " in last_entry:
+                last_speaker, last_message = last_entry.split(": ", 1)
+        
+        # Get conversation context
+        recent_messages = recent_conversation[-4:] if recent_conversation else []
         conversation_context = "\n".join(recent_messages) if recent_messages else "This conversation is just beginning."
         
-        # Build concise prompt
+        # Build response-focused prompt
+        response_instruction = ""
+        if last_speaker and last_message and last_speaker != agent_name:
+            response_instruction = f"""
+RESPOND DIRECTLY TO {last_speaker} who just said: "{last_message}"
+
+Your response should:
+1. React to THEIR specific point naturally (agree, disagree, question, build on it)
+2. Reference what THEY said using phrases like "I agree with you about...", "But you're wrong about...", "That's interesting, but what about..."
+3. Connect your expertise to THEIR point specifically
+"""
+        else:
+            response_instruction = "Start a new point in the conversation, but stay relevant to the ongoing discussion."
+        
+        # Build natural conversation prompt
         prompt = f"""You are {agent_name}, a {persona.get('core_identity', 'person with strong opinions')}.
 
 PERSONALITY: {self._get_personality_summary(personality)}
-EMOTION: {emotion} (intensity: {emotion_intensity:.1f}) - {self._get_emotion_guidance(emotion)}
-SPEECH: {persona.get('speech_patterns', 'You speak naturally and directly.')}
+CURRENT EMOTION: {emotion} (intensity: {emotion_intensity:.1f})
+SPEECH STYLE: {persona.get('speech_patterns', 'You speak naturally and directly.')}
 
-RECENT CONVERSATION:
+CONVERSATION SO FAR:
 {conversation_context}
 
-SCENARIO: {context.get('scenario_name', 'Discussion') if context else 'Discussion'} about {context.get('topic', 'environmental regulations') if context else 'the current topic'}
+{response_instruction}
 
-CRITICAL:
-- React to the LAST person who spoke with 1-2 sentences max
-- Bring your expertise: cite specific data, costs, policies, numbers
-- Show your current emotion naturally - don't be formal or diplomatic
-- Use contractions and natural speech: don't, can't, I'm, that's
-- Ask specific questions or challenge specific points
-- Don't repeat what others already said
-- NO bullet points, lists, or structural formatting
-- End with complete sentences, not fragments
-- NO character counts or meta-commentary
+CONVERSATION RULES:
+- Speak like a real person in a heated discussion - use "Yeah", "Look", "But", "I mean", "Come on"
+- Reference specific things others said: "You said X, but I think Y"
+- Ask direct questions about their points: "How do you explain...?", "What about...?"
+- Show your emotion through your words, not actions
+- Use your expertise with specific facts/numbers/examples
+- Keep it conversational - 1-2 sentences maximum
+- React first, then add your point
+
+ABSOLUTELY NO:
+- Stage directions like *gestures* or (sighs)
+- Narrative descriptions like "she responds angrily"
+- Formal speech - be natural and human
+- Repeating exactly what someone else said
+- Bullet points or lists
+
+NATURAL CONVERSATION STARTERS:
+- "Yeah, but..." / "I know, but..."
+- "Look, [Name]..." / "Come on, [Name]..."
+- "That's true, but..." / "I agree, however..."
+- "Wait, you're saying..." / "Hold on..."
+- "Okay, but what about..." / "Sure, but..."
 
 {agent_name}: """
 

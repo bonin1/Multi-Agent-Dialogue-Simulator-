@@ -181,11 +181,11 @@ class Agent:
         # Generate response using the model with human-like settings
         response = self.model_manager.generate_response(
             prompt, 
-            max_length=200,  # Increased for more complete responses
-            temperature=0.8,  # Balanced for personality while staying coherent
-            top_p=0.9,  # Increased for more variety
+            max_length=150,  # Shorter responses for natural conversation
+            temperature=0.9,  # Higher temperature for more natural variation
+            top_p=0.95,  # Allow more variety in word choice
             do_sample=True,
-            repetition_penalty=1.3  # Higher penalty to reduce repetition
+            repetition_penalty=1.4  # Higher penalty to prevent repetitive responses
         )
         
         # Clean up response formatting
@@ -216,8 +216,20 @@ class Agent:
             'neuroticism': self.state.personality.neuroticism
         }
         
-        # Prepare recent conversation context
-        recent_conversation = self.state.conversation_context[-10:] if self.state.conversation_context else []
+        # Prepare recent conversation context - prioritize conversation flow
+        recent_conversation = []
+        if context and context.get('conversation_flow'):
+            # Build conversation context from message history for better flow
+            recent_messages = context.get('recent_messages', [])
+            for msg in recent_messages[-4:]:  # Get last 4 messages
+                if isinstance(msg, dict):
+                    speaker = msg.get('speaker', 'Unknown')
+                    message = msg.get('message', '')
+                    if speaker and message:
+                        recent_conversation.append(f"{speaker}: {message}")
+        else:
+            # Fallback to old method
+            recent_conversation = self.state.conversation_context[-10:] if self.state.conversation_context else []
         
         # Get emotion name safely
         emotion_name = self.state.emotional_state.primary_emotion.value if hasattr(self.state.emotional_state.primary_emotion, 'value') else str(self.state.emotional_state.primary_emotion)
@@ -225,13 +237,17 @@ class Agent:
         # Prepare relationships
         relationships = self.state.relationships if hasattr(self.state, 'relationships') else {}
         
-        # Prepare enhanced context with conflict and engagement hints
+        # Prepare enhanced context with conversation flow priority
         enhanced_context = {
             'conflict_mode': context.get('conflict_mode', False),
             'high_stakes': context.get('high_stakes', False),
             'scenario_phase': context.get('scenario_phase', 'discussion'),
             'context_interpretation': context_interpretation,
-            'memories': memories
+            'memories': memories,
+            'encourage_response': context.get('encourage_response', False),
+            'conversation_flow': context.get('conversation_flow', False),
+            'last_speaker': context.get('last_speaker', None),
+            'last_message': context.get('last_message', None)
         }
         
         # Use the advanced prompt manager to build the prompt
@@ -261,7 +277,9 @@ class Agent:
             self.state.emotional_state.update_emotion(EmotionType.SUSPICIOUS, 0.7, f"Response to {speaker}")
     
     def _clean_response(self, response: str) -> str:
-        """Clean up the response to remove formatting artifacts"""
+        """Clean up the response to remove formatting artifacts and ensure pure dialogue"""
+        import re
+        
         # Remove bullet points and structural formatting
         response = response.strip()
         
@@ -284,12 +302,41 @@ class Agent:
         response = response.replace('[to ', '').replace('] ', '')
         response = response.replace('**', '').replace('***', '')
         
+        # CRITICAL: Remove stage directions and narrative text
+        # Remove text in asterisks (like *crosses arms* or *sighs*)
+        response = re.sub(r'\*[^*]*\*', '', response)
+        
+        # Remove text in parentheses that describes actions
+        response = re.sub(r'\([^)]*\)', '', response)
+        
+        # Remove narrative patterns like "she says", "he responds", etc.
+        narrative_patterns = [
+            r'\b(he|she|they|[A-Z][a-z]+)\s+(says?|responds?|replies?|answers?|asks?|tells?|explains?|exclaims?|whispers?|shouts?|mutters?)\b',
+            r'\b(says?|responds?|replies?|answers?|asks?|tells?|explains?|exclaims?|whispers?|shouts?|mutters?)\s+([A-Z][a-z]+)\b',
+            r'\bas\s+(he|she|they|[A-Z][a-z]+)\s+(crosses?|folds?|waves?|points?|gestures?|looks?|stares?|glances?|turns?|walks?|steps?|moves?|leans?)',
+            r'\bwhile\s+(crossing|folding|waving|pointing|gesturing|looking|staring|glancing|turning|walking|stepping|moving|leaning)',
+            r'\bwith\s+a\s+(sigh|smile|frown|grimace|laugh|chuckle|smirk)',
+            r'\bin\s+a\s+(frustrated|angry|sad|happy|excited|serious|stern|gentle|loud|quiet)\s+tone',
+            r'\bwhile\s+(sighing|smiling|frowning|laughing|chuckling|smirking)',
+            r'\b(angrily|sadly|happily|excitedly|seriously|sternly|gently|loudly|quietly)\s+(at|to|towards?)\s+',
+            r'\bas\s+(he|she|they)\s+(lean|walk|step|move|turn)',
+        ]
+        
+        for pattern in narrative_patterns:
+            response = re.sub(pattern, '', response, flags=re.IGNORECASE)
+        
+        # Remove action descriptions at the beginning or end
+        response = re.sub(r'^[^a-zA-Z0-9"\']*', '', response)  # Remove non-speech at start
+        
+        # Clean up multiple spaces and newlines
+        response = re.sub(r'\s+', ' ', response).strip()
+        
         # Ensure it doesn't start with quotes unless it's actual dialogue
         if response.startswith('"') and response.count('"') == 1:
             response = response[1:]
         
         # Remove incomplete sentences at the end
-        if response and not response[-1] in '.!?':
+        if response and response[-1] not in '.!?':
             # Find the last complete sentence
             last_punct = max(
                 response.rfind('.'),
@@ -298,6 +345,10 @@ class Agent:
             )
             if last_punct > len(response) * 0.6:  # Only if it's not too short
                 response = response[:last_punct + 1]
+        
+        # Final cleanup - remove any remaining empty text or just punctuation
+        if not response or len(response.strip('.,!? ')) < 3:
+            return "I see what you mean."  # Fallback response
         
         return response.strip()
     

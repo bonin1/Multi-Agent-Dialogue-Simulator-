@@ -261,12 +261,16 @@ def run_continuous_simulation():
             # Generate response with enhanced context
             context = {
                 'recent_messages': conversation_history[-5:],  # More context
+                'last_speaker': last_speakers[-1] if last_speakers else None,
+                'last_message': conversation_history[-1]['message'] if conversation_history else None,
                 'scenario_phase': scenario_manager.get_current_context().get('current_phase', ''),
                 'turn_count': turn_count,
                 'total_agents': len(agents),
                 'speaker_history': last_speakers[-5:],
                 'high_stakes': True,
-                'conflict_mode': turn_count > 5  # Increase conflict after initial turns
+                'conflict_mode': turn_count > 5,  # Increase conflict after initial turns
+                'encourage_response': True,  # Flag to encourage direct responses
+                'conversation_flow': True   # Flag to prioritize conversation flow
             }
             
             start_time = time.time()
