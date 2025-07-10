@@ -247,18 +247,15 @@ def run_continuous_simulation():
                     'timestamp': datetime.now(),
                     'turn': turn_count
                 })
-                # Process pressure for all agents
                 for agent in agents.values():
                     agent.process_message(pressure, "Moderator", {"turn": turn_count, "pressure": True})
             
-            # Choose speaker dynamically
             speaker_name = choose_next_speaker(agent_names, turn_count, last_speakers)
             speaker = agents[speaker_name]
             last_speakers.append(speaker_name)
             
             print(f"🤖 {speaker_name} is thinking...")
             
-            # Generate response with enhanced context
             context = {
                 'recent_messages': conversation_history[-5:],  # More context
                 'last_speaker': last_speakers[-1] if last_speakers else None,
