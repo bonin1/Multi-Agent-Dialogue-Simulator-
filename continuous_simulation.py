@@ -191,7 +191,6 @@ def run_continuous_simulation():
         
         print(f"✅ Created {len(agents)} agents: {', '.join(agents.keys())}")
         
-        # Start simulation
         scenario_context = scenario_manager.get_current_context()
         print(f"\n🚀 Starting continuous simulation...")
         print(f"📋 Scenario: {scenario_context.get('scenario_description', 'Unknown')}")
@@ -201,7 +200,6 @@ def run_continuous_simulation():
         conversation_history = []
         last_speakers = []
         
-        # Initial prompt - more dramatic
         initial_prompt = scenario_context.get('initial_prompt', 'The situation is critical and trust is scarce.')
         print(f"\n[SYSTEM]: {initial_prompt}")
         conversation_history.append({
@@ -211,11 +209,9 @@ def run_continuous_simulation():
             'turn': 0
         })
         
-        # Process initial message for all agents
         for agent in agents.values():
             agent.process_message(initial_prompt, "System", {"turn": 0})
         
-        # Main simulation loop
         agent_names = list(agents.keys())
         turn_count = 0
         
@@ -223,7 +219,6 @@ def run_continuous_simulation():
             turn_count += 1
             print(f"\n--- Turn {turn_count} ---")
             
-            # Add dynamic events
             event = add_dynamic_events(turn_count, "Corporate Espionage")
             if event:
                 print(f"\n🎬 EVENT: {event}")
@@ -233,7 +228,6 @@ def run_continuous_simulation():
                     'timestamp': datetime.now(),
                     'turn': turn_count
                 })
-                # Process event for all agents
                 for agent in agents.values():
                     agent.process_message(event, "System", {"turn": turn_count, "event": True})
             
