@@ -28,6 +28,7 @@ MANIFEST
 /test_*
 /cache
 /data
+/models/OpenHermes-2.5-Mistral-7B
 
 # Multi-Agent Simulator specific
 memory_db/
@@ -39,6 +40,7 @@ example_simulation_*.json
 venv/
 .streamlit/
 /models/downloaded
+/.vscode
 
 # PyInstaller
 #  Usually these files are written by a python script from a template

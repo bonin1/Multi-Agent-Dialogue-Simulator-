@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-"""
-Example script demonstrating the Multi-Agent Dialogue Simulator
-This shows how to use the system programmatically without the UI
-"""
-
 import logging
 import json
 from datetime import datetime
