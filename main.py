@@ -1,11 +1,17 @@
-import streamlit as st
 import logging
 import json
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 import traceback
 import time
+
+# Quiet "missing ScriptRunContext" when this file is executed with `python main.py`
+logging.getLogger("streamlit.runtime.scriptrunner_utils.script_run_context").setLevel(logging.ERROR)
+
+import streamlit as st
 import plotly.express as px
+import plotly.graph_objects as go
+import pandas as pd
 import plotly.graph_objects as go
 import pandas as pd
 
@@ -15,15 +21,53 @@ logging.basicConfig(level=logging.INFO)
 # Import custom modules (with fallback handling)
 try:
     from models.model_manager import ModelManager
+    from models.remote_llm import AnthropicChatBackend, OpenAIChatBackend, OpenRouterChatBackend
     from agents.agent import Agent
     from models.agent_models import AgentRole, PersonalityTrait, EmotionalState, EmotionType
     from scenarios.scenario_manager import ScenarioManager, AGENT_CONFIGS, SCENARIOS
     from ui.agent_creator_ui import show_agent_creator_ui
+    from ui.sim_dashboard import (
+        add_cost_from_last_response,
+        append_emotion_timeline,
+        init_extended_session_state,
+        log_run,
+        pick_next_speaker,
+        render_accessibility_css,
+        render_enhanced_analytics,
+        render_lab_tab,
+        render_library_tab,
+        render_run_controls_sidebar,
+        render_run_logs_drawer,
+        render_settings_tab,
+        render_transcript_tab,
+    )
     from agents.agent_creator import AgentCreator
+    from ui.research_ui import (
+        render_research_tab,
+        render_sidebar_agent_research,
+        run_auto_research_for_start,
+        get_research_brief,
+        handle_moderator_research_command,
+    )
+    from ui.session_controls import render_reset_buttons
 except ImportError as e:
-    st.error(f"Error importing modules: {e}")
-    st.error("Please install required dependencies: pip install -r requirements.txt")
-    st.stop()
+    print(f"Error importing modules: {e}", flush=True)
+    print("Install dependencies: pip install -r requirements.txt", flush=True)
+    raise SystemExit(1)
+
+if __name__ == "__main__":
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+    except ImportError:
+        get_script_run_ctx = lambda: None  # type: ignore[misc, assignment]
+
+    if get_script_run_ctx() is None:
+        print(
+            "\nThis app must be started with Streamlit (not `python main.py`):\n\n"
+            "  streamlit run main.py\n",
+            flush=True,
+        )
+        raise SystemExit(1)
 
 # Page configuration
 st.set_page_config(
@@ -32,6 +76,14 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+init_extended_session_state()
+try:
+    from ui.research_ui import init_research_session_state
+    init_research_session_state()
+except ImportError:
+    pass
+render_accessibility_css()
 
 # Initialize session state
 if 'agents' not in st.session_state:
@@ -52,18 +104,76 @@ if 'agent_creator' not in st.session_state:
     st.session_state.agent_creator = AgentCreator()
 if 'auto_turn_interval' not in st.session_state:
     st.session_state.auto_turn_interval = 3
-if 'auto_turn_interval' not in st.session_state:
-    st.session_state.auto_turn_interval = 3
 
 def load_model():
-    """Load the language model"""
+    """Load local HF model or configure a remote API backend (BYOK)."""
+    import os
+
     try:
-        if st.session_state.model_manager is None:
-            with st.spinner("Loading AI model... This may take a few minutes."):
-                st.session_state.model_manager = ModelManager()
+        try:
+            secrets = getattr(st, "secrets", None)
+            if secrets and "HUGGING_FACE_HUB_TOKEN" in secrets:
+                os.environ["HUGGING_FACE_HUB_TOKEN"] = secrets["HUGGING_FACE_HUB_TOKEN"]
+        except Exception:
+            pass
+
+        hf_ui = (st.session_state.get("huggingface_token") or "").strip()
+        if hf_ui:
+            os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_ui
+
+        backend = st.session_state.get("llm_backend", "local")
+
+        if backend == "openai":
+            key = (st.session_state.get("openai_api_key") or os.environ.get("OPENAI_API_KEY") or "").strip()
+            if not key:
+                st.error("OpenAI API key required (Settings tab or OPENAI_API_KEY env).")
+                return False
+            with st.spinner("Connecting to OpenAI…"):
+                st.session_state.model_manager = OpenAIChatBackend(
+                    key, st.session_state.get("openai_model", "gpt-4o-mini")
+                )
+            log_run("Model backend: OpenAI")
+            return True
+
+        if backend == "anthropic":
+            key = (st.session_state.get("anthropic_api_key") or os.environ.get("ANTHROPIC_API_KEY") or "").strip()
+            if not key:
+                st.error("Anthropic API key required (Settings tab or ANTHROPIC_API_KEY env).")
+                return False
+            with st.spinner("Connecting to Anthropic…"):
+                st.session_state.model_manager = AnthropicChatBackend(
+                    key, st.session_state.get("anthropic_model", "claude-3-5-haiku-20241022")
+                )
+            log_run("Model backend: Anthropic")
+            return True
+
+        if backend == "openrouter":
+            key = (
+                st.session_state.get("openrouter_api_key")
+                or os.environ.get("OPENROUTER_API_KEY")
+                or ""
+            ).strip()
+            if not key:
+                st.error("OpenRouter API key required (Settings tab or OPENROUTER_API_KEY env).")
+                return False
+            with st.spinner("Connecting to OpenRouter…"):
+                st.session_state.model_manager = OpenRouterChatBackend(
+                    key,
+                    st.session_state.get("openrouter_model", "openai/gpt-4o-mini"),
+                    site_url=st.session_state.get("openrouter_site_url", ""),
+                    site_name=st.session_state.get("openrouter_site_name", "Multi-Agent Dialogue Simulator"),
+                )
+            log_run("Model backend: OpenRouter")
+            return True
+
+        with st.spinner("Loading AI model… This may take a few minutes."):
+            model_id = st.session_state.get("local_model_name", "teknium/OpenHermes-2.5-Mistral-7B")
+            st.session_state.model_manager = ModelManager(model_id)
+        log_run(f"Model backend: local HF ({model_id})")
         return True
     except Exception as e:
         st.error(f"Error loading model: {e}")
+        log_run(str(e), "error")
         return False
 
 def create_agent(name: str, config: Dict[str, Any]) -> Optional[Agent]:
@@ -163,18 +273,43 @@ def display_agent_card(agent: Agent):
 def main():
     st.title("🤖 Autonomous Multi-Agent Dialogue Simulator")
     st.markdown("*Simulate complex multi-agent conversations with AI entities that have memory, emotions, and distinct personalities.*")
-    
-    # Main navigation
-    tab1, tab2, tab3 = st.tabs(["💬 Simulation", "🛠️ Create Agents", "📊 Analytics"])
-    
+
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
+        [
+            "💬 Simulation",
+            "🛠️ Create Agents",
+            "📊 Analytics",
+            "🌐 Live Research",
+            "📜 Transcript",
+            "🧪 Lab",
+            "📚 Library",
+            "⚙️ Settings",
+        ]
+    )
+
     with tab1:
         show_simulation_interface()
-    
+
     with tab2:
         show_agent_creator_interface()
-    
+
     with tab3:
         show_analytics_interface()
+
+    with tab4:
+        render_research_tab()
+
+    with tab5:
+        render_transcript_tab()
+
+    with tab6:
+        render_lab_tab(st.session_state.scenario_manager)
+
+    with tab7:
+        render_library_tab()
+
+    with tab8:
+        render_settings_tab()
 
 def show_simulation_interface():
     """Show the main simulation interface"""
@@ -184,8 +319,9 @@ def show_simulation_interface():
         
         # Model loading
         if st.button("Load AI Model", type="primary"):
+            st.session_state.model_manager = None
             if load_model():
-                st.success("Model loaded successfully!")
+                st.success("Model / API ready!")
             else:
                 st.error("Failed to load model")
         
@@ -196,19 +332,51 @@ def show_simulation_interface():
             with st.expander("Model Information"):
                 model_info = st.session_state.model_manager.get_model_info()
                 st.json(model_info)
+
+            last = getattr(st.session_state.model_manager, "last_stats", None) or {}
+            if last:
+                with st.expander("Last generation (technical)"):
+                    st.write(
+                        f"**Latency:** {last.get('latency_s', 0):.2f}s"
+                        if last.get("latency_s") is not None
+                        else "**Latency:** —"
+                    )
+                    if last.get("input_tokens") is not None:
+                        st.write(f"**Tokens:** {last['input_tokens']} in / {last.get('output_tokens', 0)} out")
+                    if last.get("error"):
+                        st.error(last["error"])
         else:
             st.warning("⚠️ Model not loaded")
         
+        rb = get_research_brief()
+        if rb:
+            st.caption(f"🌐 Research loaded: {rb.topic}")
+
+        render_reset_buttons()
+
         st.divider()
         
         # Scenario selection
         st.subheader("Scenario Setup")
-        scenario_names = list(SCENARIOS.keys())
+        NO_SCENARIO_LABEL = "— No scenario (free-form + auto research) —"
+        scenario_names = [NO_SCENARIO_LABEL] + list(
+            st.session_state.scenario_manager.get_available_scenarios().keys()
+        )
         selected_scenario = st.selectbox("Choose Scenario", scenario_names)
         
-        if st.button("Set Scenario"):
-            st.session_state.scenario_manager.set_scenario(selected_scenario)
-            st.success(f"Scenario set: {selected_scenario}")
+        if st.button("Apply scenario"):
+            if selected_scenario == NO_SCENARIO_LABEL:
+                st.session_state.scenario_manager.clear_scenario()
+                st.success("Free-form mode — no scripted scenario. Set a topic under Live Research or below.")
+            else:
+                st.session_state.scenario_manager.set_scenario(selected_scenario)
+                st.success(f"Scenario set: {selected_scenario}")
+
+        st.session_state.freeform_topic = st.text_input(
+            "Free-form topic (no scenario)",
+            value=st.session_state.get("freeform_topic", ""),
+            help="Used for auto web research when starting without a scenario.",
+        )
         
         # Display current scenario
         current_context = st.session_state.scenario_manager.get_current_context()
@@ -236,8 +404,9 @@ def show_simulation_interface():
             st.write(f"**Available agents:** {len(predefined_agents)} predefined")
             st.info("💡 Create custom agents in the 'Create Agents' tab!")
         
-        if selected_scenario and selected_scenario in SCENARIOS:
-            suggested_agents = SCENARIOS[selected_scenario].get('suggested_agents', [])
+        all_scenarios = st.session_state.scenario_manager.get_available_scenarios()
+        if selected_scenario != NO_SCENARIO_LABEL and selected_scenario in all_scenarios:
+            suggested_agents = all_scenarios[selected_scenario].get('suggested_agents', [])
             st.write("**Suggested agents for this scenario:**")
             for agent in suggested_agents:
                 agent_type = "predefined" if agent in AGENT_CONFIGS else "custom" if agent in all_available_agents else "missing"
@@ -270,7 +439,7 @@ def show_simulation_interface():
             selected_agents = st.multiselect(
                 "Select Agents (2-5 recommended)",
                 available_agent_names,
-                default=SCENARIOS[selected_scenario].get('suggested_agents', [])[:3] if selected_scenario else []
+                default=all_scenarios[selected_scenario].get('suggested_agents', [])[:3] if selected_scenario in all_scenarios else []
             )
         
         # Show selected agents info
@@ -306,9 +475,42 @@ def show_simulation_interface():
             
             if success_count > 0:
                 st.success(f"✅ Created {success_count} agents successfully!")
+                snapshots = {}
+                for name, ag in st.session_state.agents.items():
+                    summ = ag.get_agent_summary()
+                    snapshots[name] = {
+                        "personality": summ.get("personality"),
+                        "role": summ.get("role"),
+                        "goals": summ.get("goals", []),
+                    }
+                st.session_state.agent_persona_snapshots = snapshots
             else:
                 st.error("❌ No agents were created successfully")
         
+        if st.session_state.agents:
+            st.divider()
+            render_run_controls_sidebar()
+            st.subheader("Turn-taking")
+            st.session_state.next_speaker_mode = st.selectbox(
+                "Next speaker mode",
+                ["round_robin", "random", "manual", "reply_chain", "balance"],
+                help="Who speaks next on each agent turn.",
+            )
+            if st.session_state.next_speaker_mode == "manual":
+                st.session_state.manual_next_speaker = st.selectbox(
+                    "Manual: who speaks",
+                    list(st.session_state.agents.keys()),
+                )
+            st.session_state.muted_agents = st.multiselect(
+                "Muted agents (excluded from rotation)",
+                list(st.session_state.agents.keys()),
+                default=[m for m in st.session_state.get("muted_agents", []) if m in st.session_state.agents],
+            )
+            solo_opts = ["— none —"] + list(st.session_state.agents.keys())
+            cur_solo = st.session_state.get("solo_agent")
+            solo_index = solo_opts.index(cur_solo) if cur_solo in solo_opts else 0
+            st.session_state.solo_agent = st.selectbox("Solo mode (only this agent speaks)", solo_opts, index=solo_index)
+
         st.divider()
         
         # Simulation controls
@@ -329,7 +531,10 @@ def show_simulation_interface():
                 if current_context:
                     st.info(f"🎭 **Scenario**: {current_context.get('scenario_description', 'Custom scenario')}")
                 else:
-                    st.warning("⚠️ No scenario selected. You can still start a free-form conversation.")
+                    st.info(
+                        "🌐 **Free-form mode** — no scenario. On start, agents will "
+                        "**research the web** using your free-form topic or Research tab input."
+                    )
                 
                 # Simulation mode selection
                 st.subheader("Simulation Mode")
@@ -352,19 +557,61 @@ def show_simulation_interface():
                     st.session_state.continuous_mode = False
                 
                 if st.button("Start Simulation", type="primary"):
+                    import random
+
+                    st.session_state.emotion_timeline = []
+                    if st.session_state.get("use_fixed_seed"):
+                        seed_v = int(st.session_state.get("run_seed_value", 42))
+                    else:
+                        seed_v = random.randint(1, 2**31 - 1)
+                    st.session_state.run_seed = seed_v
+                    random.seed(seed_v)
+                    log_run(
+                        f"Simulation start seed={seed_v} label={st.session_state.get('run_label', '')!r}"
+                    )
                     st.session_state.simulation_running = True
                     st.session_state.turn_count = 0
                     # Add initial prompt
                     if current_context:
                         initial_prompt = current_context.get('initial_prompt', 'Let\'s begin our discussion.')
                     else:
-                        initial_prompt = 'Let\'s begin our discussion.'
+                        ft = (st.session_state.get("freeform_topic") or "").strip()
+                        initial_prompt = (
+                            f"Free-form discussion{f' about: {ft}' if ft else ''}. "
+                            "Use the live research brief — react to real facts, stay concise."
+                        )
                     st.session_state.conversation_history.append({
                         'speaker': 'System',
                         'message': initial_prompt,
                         'timestamp': datetime.now(),
                         'turn': 0
                     })
+                    # Live research before debate
+                    try:
+                        need_research = (
+                            not current_context
+                            and st.session_state.get("auto_research_no_scenario", True)
+                        ) or st.session_state.get("auto_research_on_start")
+                        if need_research:
+                            topic = (
+                                st.session_state.get("research_topic")
+                                or st.session_state.get("freeform_topic")
+                                or ""
+                            ).strip()
+                            if not topic and not current_context and not st.session_state.get("research_brief"):
+                                st.sidebar.warning(
+                                    "No topic set — add **Free-form topic** or paste a URL in **Live Research**."
+                                )
+                            elif run_auto_research_for_start(
+                                freeform_topic=topic, force=not current_context
+                            ):
+                                log_run(
+                                    f"Auto-research on start: "
+                                    f"{st.session_state.research_brief.topic[:80]}"
+                                )
+                    except Exception as ex:
+                        log_run(f"Auto-research failed: {ex}", "error")
+                        st.sidebar.error(f"Research failed: {ex}")
                     st.rerun()
             else:
                 # Show current mode
@@ -426,18 +673,32 @@ def show_simulation_interface():
                 if current_context:
                     st.json(current_context)
         
+        if st.session_state.simulation_running:
+            render_sidebar_agent_research()
+
         # Manual intervention
         if st.session_state.simulation_running:
             st.subheader("Manual Intervention")
             user_input = st.text_area("Add context or intervention:")
             if st.button("Send") and user_input:
-                st.session_state.conversation_history.append({
-                    'speaker': 'Moderator',
-                    'message': user_input,
-                    'timestamp': datetime.now(),
-                    'turn': st.session_state.turn_count
-                })
+                if handle_moderator_research_command(user_input):
+                    st.session_state.conversation_history.append({
+                        'speaker': 'Moderator',
+                        'message': user_input,
+                        'timestamp': datetime.now(),
+                        'turn': st.session_state.turn_count
+                    })
+                    st.success("Agents are researching that topic…")
+                else:
+                    st.session_state.conversation_history.append({
+                        'speaker': 'Moderator',
+                        'message': user_input,
+                        'timestamp': datetime.now(),
+                        'turn': st.session_state.turn_count
+                    })
                 st.rerun()
+        
+        render_run_logs_drawer()
     
     # Main content area
     if not st.session_state.agents:
@@ -448,7 +709,7 @@ def show_simulation_interface():
         
         with col1:
             st.subheader("Available Scenarios")
-            for name, scenario in SCENARIOS.items():
+            for name, scenario in st.session_state.scenario_manager.get_available_scenarios().items():
                 with st.expander(name):
                     st.write(scenario['description'])
                     st.write(f"**Context:** {scenario['context']}")
@@ -473,6 +734,13 @@ def show_simulation_interface():
         
         st.divider()
         
+        rb = get_research_brief()
+        if rb:
+            title = rb.topic if not rb.topic.startswith("http") else (
+                rb.article_hit.title if rb.article_hit else "Live article"
+            )
+            st.info(f"🌐 **Live research active:** {title}")
+
         # Conversation display
         st.header("Conversation")
         
@@ -484,7 +752,12 @@ def show_simulation_interface():
                 for entry in st.session_state.conversation_history[-20:]:  # Show last 20 messages
                     timestamp = entry['timestamp'].strftime("%H:%M:%S")
                     speaker = entry['speaker']
-                    message = entry['message']
+                    message = entry.get('message', '')
+                    try:
+                        from utils.response_cleaner import clean_dialogue_text
+                        message = clean_dialogue_text(message)
+                    except ImportError:
+                        pass
                     
                     if speaker == 'System':
                         st.info(f"**[{timestamp}] {speaker}:** {message}")
@@ -555,47 +828,90 @@ def simulate_turn():
     """Simulate one turn of conversation"""
     if not st.session_state.agents:
         return
-    
+
     st.session_state.turn_count += 1
-    
-    # Choose next speaker (can be improved with more sophisticated logic)
+
     agent_names = list(st.session_state.agents.keys())
-    current_speaker_name = agent_names[st.session_state.turn_count % len(agent_names)]
+    mode = st.session_state.get("next_speaker_mode", "round_robin")
+    manual = st.session_state.get("manual_next_speaker")
+    muted = st.session_state.get("muted_agents") or []
+    solo_raw = st.session_state.get("solo_agent")
+    solo = solo_raw if solo_raw and solo_raw != "— none —" else None
+
+    current_speaker_name = pick_next_speaker(
+        agent_names,
+        st.session_state.turn_count,
+        st.session_state.conversation_history,
+        mode,
+        manual,
+        muted,
+        solo,
+    )
     current_speaker = st.session_state.agents[current_speaker_name]
-    
-    # Process recent messages for all agents
+
     recent_messages = st.session_state.conversation_history[-5:]
     for message_entry in recent_messages:
         for agent in st.session_state.agents.values():
             agent.process_message(
-                message_entry['message'],
-                message_entry['speaker'],
-                context={'turn': message_entry.get('turn', 0)}
+                message_entry["message"],
+                message_entry["speaker"],
+                context={"turn": message_entry.get("turn", 0)},
             )
-    
-    # Generate response from current speaker
+
+    last_msg = recent_messages[-1]["message"] if recent_messages else ""
+    last_spk = recent_messages[-1]["speaker"] if recent_messages else ""
+
+    ctx = st.session_state.scenario_manager.get_current_context() or {}
     context = {
-        'recent_messages': recent_messages,
-        'scenario_phase': st.session_state.scenario_manager.get_current_context().get('current_phase', ''),
-        'agent_emotions': {name: agent.state.emotional_state.primary_emotion.value 
-                          for name, agent in st.session_state.agents.items()},
-        'turn_count': st.session_state.turn_count
+        "recent_messages": recent_messages,
+        "conversation_flow": True,
+        "last_speaker": last_spk,
+        "last_message": last_msg,
+        "scenario_phase": ctx.get("current_phase", ""),
+        "agent_emotions": {
+            name: agent.state.emotional_state.primary_emotion.value
+            for name, agent in st.session_state.agents.items()
+        },
+        "turn_count": st.session_state.turn_count,
+        "prompt_lab_system": st.session_state.get("prompt_lab_system", ""),
+        "prompt_lab_style": st.session_state.get("prompt_lab_style", ""),
     }
-    
+    brief = get_research_brief()
+    if brief is not None:
+        context["research_brief"] = brief.to_context_block(max_chars=1800)
+
     try:
         response = current_speaker.generate_response(context)
-        
-        # Add to conversation history
-        st.session_state.conversation_history.append({
-            'speaker': current_speaker_name,
-            'message': response,
-            'timestamp': datetime.now(),
-            'turn': st.session_state.turn_count
-        })
-        
+
+        entry = {
+            "speaker": current_speaker_name,
+            "message": response,
+            "timestamp": datetime.now(),
+            "turn": st.session_state.turn_count,
+        }
+        mm = st.session_state.model_manager
+        if mm is not None and hasattr(mm, "last_stats"):
+            stats = getattr(mm, "last_stats", {}) or {}
+            if stats.get("latency_s") is not None:
+                entry["latency_s"] = stats["latency_s"]
+            if stats.get("input_tokens") is not None:
+                entry["input_tokens"] = stats["input_tokens"]
+            if stats.get("output_tokens") is not None:
+                entry["output_tokens"] = stats["output_tokens"]
+            if hasattr(mm, "get_model_info"):
+                info = mm.get_model_info() or {}
+                mid = info.get("model_name")
+                if mid:
+                    entry["model_id"] = mid
+
+        st.session_state.conversation_history.append(entry)
+        add_cost_from_last_response()
+        append_emotion_timeline(st.session_state.turn_count, st.session_state.agents)
+
     except Exception as e:
         st.error(f"Error generating response from {current_speaker_name}: {e}")
         st.error(traceback.format_exc())
+        log_run(f"generate_response: {e}", "error")
 
 def show_agent_creator_interface():
     """Show the agent creator interface"""
@@ -697,6 +1013,8 @@ def show_analytics_interface():
             avg_length = df['message'].str.len().mean()
             st.metric("Avg Message Length", f"{avg_length:.0f} chars")
     
+    st.metric("Approx. session API cost (USD)", f"{st.session_state.get('total_cost_usd_session', 0.0):.5f}")
+    
     # Speaker distribution
     if len(df) > 0:
         speaker_counts = df['speaker'].value_counts()
@@ -739,6 +1057,10 @@ def show_analytics_interface():
                         st.write("**Recent Thoughts:**")
                         for reflection in summary['recent_reflections']:
                             st.write(f"• {reflection}")
+
+    st.divider()
+    render_enhanced_analytics()
+
 
 def get_all_available_agents():
     """Get all available agents (predefined + custom)"""
@@ -790,10 +1112,13 @@ def create_agent_from_config(name: str, config: Dict[str, Any]) -> Optional[Agen
 
 if __name__ == "__main__":
     main()
-    
+
     # Auto-refresh for continuous mode
     if (st.session_state.get('simulation_running', False) and 
         st.session_state.get('continuous_mode', False)):
-        time.sleep(st.session_state.get('auto_turn_interval', 3))
+        interval = float(st.session_state.get('auto_turn_interval', 3))
+        if st.session_state.get('reduce_motion'):
+            interval = max(interval, 5.0)
+        time.sleep(interval)
         simulate_turn()
         st.rerun()

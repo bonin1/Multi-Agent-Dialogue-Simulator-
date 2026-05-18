@@ -1,3 +1,4 @@
+import time
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 import logging
@@ -13,6 +14,7 @@ class ModelManager:
         self.tokenizer = None
         self.model = None
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.last_stats: Dict[str, Any] = {}
         self.load_model()
     
     def load_model(self):
@@ -72,10 +74,13 @@ class ModelManager:
                          do_sample: bool = True,
                          repetition_penalty: float = 1.1) -> str:
         """Generate a response using the loaded model"""
+        self.last_stats = {}
+        t0 = time.perf_counter()
         try:
             # Tokenize input
             inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048)
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            in_len = int(inputs["input_ids"].shape[1])
             
             # Generate response
             with torch.no_grad():
@@ -90,6 +95,12 @@ class ModelManager:
                     repetition_penalty=repetition_penalty
                 )
             
+            out_len = int(outputs.shape[1])
+            self.last_stats["input_tokens"] = in_len
+            self.last_stats["output_tokens"] = max(0, out_len - in_len)
+            self.last_stats["latency_s"] = time.perf_counter() - t0
+            self.last_stats["backend"] = "local_hf"
+            
             # Decode response
             response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
             
@@ -103,14 +114,16 @@ class ModelManager:
             response = response.strip()
             
             # If response is empty or too short, provide a fallback
-            if not response or len(response.strip()) < 10:
-                logging.warning("Generated empty or very short response, using fallback")
-                response = "I need more time to process this information."
+            if not response or len(response.strip()) < 8:
+                logging.warning("Generated empty or very short response from model")
+                response = ""
             
             return response
             
         except Exception as e:
             logging.error(f"Error generating response: {e}")
+            self.last_stats["latency_s"] = time.perf_counter() - t0
+            self.last_stats["error"] = str(e)
             return "I apologize, but I'm having trouble generating a response right now."
     
     def get_model_info(self) -> Dict[str, Any]:
@@ -121,6 +134,7 @@ class ModelManager:
         return {
             "model_name": self.model_name,
             "device": self.device,
+            "backend": "local_hf",
             "memory_usage": torch.cuda.memory_allocated() if torch.cuda.is_available() else "N/A",
             "parameters": sum(p.numel() for p in self.model.parameters()) if self.model else 0
         }

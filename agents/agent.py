@@ -180,16 +180,18 @@ class Agent:
         
         # Generate response using the model with human-like settings
         response = self.model_manager.generate_response(
-            prompt, 
-            max_length=150,  # Shorter responses for natural conversation
-            temperature=0.9,  # Higher temperature for more natural variation
-            top_p=0.95,  # Allow more variety in word choice
+            prompt,
+            max_length=90,
+            temperature=0.72,
+            top_p=0.88,
             do_sample=True,
-            repetition_penalty=1.4  # Higher penalty to prevent repetitive responses
+            repetition_penalty=1.35,
         )
-        
+
         # Clean up response formatting
         response = self._clean_response(response)
+        if not response or len(response.strip()) < 8:
+            response = self._fallback_short_reply(context)
         
         # Store own response in memory
         self.memory_system.store_conversation(response, self.state.name, context)
@@ -247,11 +249,13 @@ class Agent:
             'encourage_response': context.get('encourage_response', False),
             'conversation_flow': context.get('conversation_flow', False),
             'last_speaker': context.get('last_speaker', None),
-            'last_message': context.get('last_message', None)
+            'last_message': context.get('last_message', None),
         }
-        
+        if context and context.get("research_brief"):
+            enhanced_context["research_brief"] = context["research_brief"]
+
         # Use the advanced prompt manager to build the prompt
-        return self.prompt_manager.build_main_prompt(
+        base = self.prompt_manager.build_main_prompt(
             agent_name=self.state.name,
             role=self.state.role,
             personality=personality_dict,
@@ -261,6 +265,29 @@ class Agent:
             relationships=relationships,
             context=enhanced_context
         )
+        if context:
+            if context.get("prompt_lab_system"):
+                base = f"[Director note: {context['prompt_lab_system']}]\n\n{base}"
+            if context.get("prompt_lab_style"):
+                base = f"{base}\n\n[Speaking style note: {context['prompt_lab_style']}]"
+        return base
+
+    def _fallback_short_reply(self, context: Optional[Dict[str, Any]]) -> str:
+        """Short in-character line when the model returns empty or garbage."""
+        import random
+
+        last = ""
+        if context and context.get("last_message"):
+            last = str(context["last_message"])[:80]
+        templates = [
+            "I'm not buying that — what's your evidence?",
+            "Okay, but how does that work in practice?",
+            "That's fair, yet we're missing the bigger risk here.",
+            "Wait — you're skipping the part that actually matters.",
+        ]
+        if last:
+            return random.choice(templates)
+        return random.choice(templates)
     
     def _update_emotional_state(self, message: str, speaker: str):
         """Update emotional state based on incoming message"""
@@ -279,6 +306,12 @@ class Agent:
     def _clean_response(self, response: str) -> str:
         """Clean up the response to remove formatting artifacts and ensure pure dialogue"""
         import re
+
+        try:
+            from utils.response_cleaner import clean_dialogue_text
+            response = clean_dialogue_text(response)
+        except ImportError:
+            pass
         
         # Remove bullet points and structural formatting
         response = response.strip()

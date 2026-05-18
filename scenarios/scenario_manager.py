@@ -125,19 +125,31 @@ class ScenarioManager:
         self.current_scenario = None
         self.current_phase = 0
         self.scenario_history = []
+        self.custom_scenarios: Dict[str, Dict[str, Any]] = {}
     
     def get_available_scenarios(self) -> Dict[str, Dict]:
-        """Get all available scenarios"""
-        return SCENARIOS
-    
+        """Get all available scenarios (built-in plus custom from UI)."""
+        merged = {**SCENARIOS, **self.custom_scenarios}
+        return merged
+
+    def register_custom_scenario(self, name: str, data: Dict[str, Any]) -> None:
+        """Register or overwrite a user-defined scenario (same shape as SCENARIOS values)."""
+        self.custom_scenarios[name] = data
+
     def get_available_agents(self) -> Dict[str, Dict]:
         """Get all available agent configurations"""
         return AGENT_CONFIGS
     
+    def clear_scenario(self) -> None:
+        """Run free-form mode with no scripted scenario."""
+        self.current_scenario = None
+        self.current_phase = 0
+
     def set_scenario(self, scenario_name: str):
         """Set the current scenario"""
-        if scenario_name in SCENARIOS:
-            self.current_scenario = SCENARIOS[scenario_name]
+        all_scenarios = {**SCENARIOS, **self.custom_scenarios}
+        if scenario_name in all_scenarios:
+            self.current_scenario = all_scenarios[scenario_name]
             self.current_phase = 0
             self.scenario_history.append({
                 "scenario": scenario_name,
@@ -170,8 +182,9 @@ class ScenarioManager:
     
     def get_suggested_agents(self, scenario_name: str) -> List[str]:
         """Get suggested agents for a scenario"""
-        if scenario_name in SCENARIOS:
-            return SCENARIOS[scenario_name].get("suggested_agents", [])
+        all_scenarios = {**SCENARIOS, **self.custom_scenarios}
+        if scenario_name in all_scenarios:
+            return all_scenarios[scenario_name].get("suggested_agents", [])
         return []
     
     def generate_random_scenario_context(self) -> str:

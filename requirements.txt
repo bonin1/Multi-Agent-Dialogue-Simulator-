@@ -13,3 +13,4 @@ plotly>=5.17.0
 huggingface-hub>=0.17.0
 accelerate>=0.24.0
 bitsandbytes>=0.41.0
+duckduckgo-search>=6.0.0

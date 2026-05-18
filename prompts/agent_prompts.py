@@ -288,13 +288,20 @@ Your response should:
         else:
             response_instruction = "Start a new point in the conversation, but stay relevant to the ongoing discussion."
         
+        research_block = ""
+        if context and context.get("research_brief"):
+            research_block = f"""
+LIVE RESEARCH (real web/news — use naturally, do not read URLs aloud):
+{context['research_brief']}
+"""
+
         # Build natural conversation prompt
         prompt = f"""You are {agent_name}, a {persona.get('core_identity', 'person with strong opinions')}.
 
 PERSONALITY: {self._get_personality_summary(personality)}
 CURRENT EMOTION: {emotion} (intensity: {emotion_intensity:.1f})
 SPEECH STYLE: {persona.get('speech_patterns', 'You speak naturally and directly.')}
-
+{research_block}
 CONVERSATION SO FAR:
 {conversation_context}
 
@@ -305,11 +312,13 @@ CONVERSATION RULES:
 - Reference specific things others said: "You said X, but I think Y"
 - Ask direct questions about their points: "How do you explain...?", "What about...?"
 - Show your emotion through your words, not actions
-- Use your expertise with specific facts/numbers/examples
-- Keep it conversational - 1-2 sentences maximum
-- React first, then add your point
+- Use at most ONE concrete fact or example per reply (from research brief if provided)
+- MAXIMUM 2 short sentences, under 45 words total — stop after your point
+- React first, then add your point — never ramble or list multiple ideas
 
 ABSOLUTELY NO:
+- Long paragraphs, run-on sentences, or repeating the same idea
+- Inventing fake statistics or names; only cite facts from the research brief if present
 - Stage directions like *gestures* or (sighs)
 - Narrative descriptions like "she responds angrily"
 - Formal speech - be natural and human

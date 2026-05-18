@@ -233,3 +233,49 @@ class MemorySystem:
                 stats[name] = 0
         
         return stats
+
+    def _collection_by_kind(self, kind: str):
+        mapping = {
+            "conversation": self.conversation_memory,
+            "episode": self.episodic_memory,
+            "knowledge": self.semantic_memory,
+            "emotional": self.emotional_memory,
+        }
+        if kind not in mapping:
+            raise ValueError(f"Unknown memory kind: {kind}")
+        return mapping[kind]
+
+    def list_memory_entries(self, kind: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """Return recent entries from a collection (ids + document + metadata)."""
+        col = self._collection_by_kind(kind)
+        try:
+            data = col.get(include=["documents", "metadatas"])
+        except Exception as e:
+            logging.warning("list_memory_entries: %s", e)
+            return []
+        docs = data.get("documents") or []
+        metas = data.get("metadatas") or []
+        ids = data.get("ids") or []
+        out = []
+        for i in range(len(docs)):
+            out.append(
+                {
+                    "id": ids[i] if i < len(ids) else str(i),
+                    "document": docs[i],
+                    "metadata": metas[i] if i < len(metas) else {},
+                }
+            )
+        out.sort(key=lambda x: x.get("metadata", {}).get("timestamp", ""), reverse=True)
+        return out[:limit]
+
+    def delete_memory_entries(self, kind: str, entry_ids: List[str]) -> int:
+        """Delete entries by id from a collection. Returns number deleted."""
+        if not entry_ids:
+            return 0
+        col = self._collection_by_kind(kind)
+        try:
+            col.delete(ids=entry_ids)
+            return len(entry_ids)
+        except Exception as e:
+            logging.warning("delete_memory_entries: %s", e)
+            return 0
