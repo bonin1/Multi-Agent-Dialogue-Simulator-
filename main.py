@@ -21,7 +21,12 @@ logging.basicConfig(level=logging.INFO)
 # Import custom modules (with fallback handling)
 try:
     from models.model_manager import ModelManager
-    from models.remote_llm import AnthropicChatBackend, OpenAIChatBackend, OpenRouterChatBackend
+    from models.remote_llm import (
+        AnthropicChatBackend,
+        GroqChatBackend,
+        OpenAIChatBackend,
+        OpenRouterChatBackend,
+    )
     from agents.agent import Agent
     from models.agent_models import AgentRole, PersonalityTrait, EmotionalState, EmotionType
     from scenarios.scenario_manager import ScenarioManager, AGENT_CONFIGS, SCENARIOS
@@ -164,6 +169,18 @@ def load_model():
                     site_name=st.session_state.get("openrouter_site_name", "Multi-Agent Dialogue Simulator"),
                 )
             log_run("Model backend: OpenRouter")
+            return True
+
+        if backend == "groq":
+            key = (st.session_state.get("groq_api_key") or os.environ.get("GROQ_API_KEY") or "").strip()
+            if not key:
+                st.error("Groq API key required (Settings tab or GROQ_API_KEY env).")
+                return False
+            with st.spinner("Connecting to Groq…"):
+                st.session_state.model_manager = GroqChatBackend(
+                    key, st.session_state.get("groq_model", "llama-3.3-70b-versatile")
+                )
+            log_run("Model backend: Groq")
             return True
 
         with st.spinner("Loading AI model… This may take a few minutes."):

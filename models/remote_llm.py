@@ -11,6 +11,12 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+# Cloudflare (in front of Groq and others) blocks urllib's default "Python-urllib/x.y" UA.
+_DEFAULT_HTTP_USER_AGENT = (
+    "Multi-Agent-Dialogue-Simulator/1.0 "
+    "(compatible; +https://github.com/bonin1/Multi-Agent-Dialogue-Simulator)"
+)
+
 
 class RemoteLLMBase:
     """Shared surface compatible with ModelManager for Agent.generate_response."""
@@ -59,6 +65,7 @@ def _openai_compatible_chat(
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
+        "User-Agent": _DEFAULT_HTTP_USER_AGENT,
     }
     if extra_headers:
         headers.update(extra_headers)
@@ -134,6 +141,51 @@ class OpenAIChatBackend(RemoteLLMBase):
         )
         if text.startswith("__ERROR__:"):
             return "I apologize — the language API returned an error. Check your API key and model name."
+        return text
+
+
+class GroqChatBackend(RemoteLLMBase):
+    """Groq — OpenAI-compatible chat API (https://console.groq.com/docs/openai)."""
+
+    def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile") -> None:
+        super().__init__()
+        self.api_key = api_key.strip()
+        self.model = model
+
+    def get_model_info(self) -> Dict[str, Any]:
+        return {
+            "backend": "groq",
+            "model_name": self.model,
+            "device": "api",
+        }
+
+    def generate_response(
+        self,
+        prompt: str,
+        max_length: int = 512,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        do_sample: bool = True,
+        repetition_penalty: float = 1.1,
+    ) -> str:
+        del do_sample, repetition_penalty
+        self.last_stats = {}
+        text = _openai_compatible_chat(
+            url="https://api.groq.com/openai/v1/chat/completions",
+            api_key=self.api_key,
+            model=self.model,
+            prompt=prompt,
+            max_length=max_length,
+            temperature=temperature,
+            top_p=top_p,
+            stats=self.last_stats,
+            backend_label="groq",
+        )
+        if text.startswith("__ERROR__:"):
+            return (
+                "I apologize — Groq returned an error. "
+                "Check your API key and model id (e.g. llama-3.3-70b-versatile)."
+            )
         return text
 
 
@@ -281,6 +333,22 @@ def estimate_openai_cost_usd(model: str, input_tokens: int, output_tokens: int) 
         "gpt-4o": (2.50, 10.00),
         "gpt-4-turbo": (10.00, 30.00),
         "gpt-3.5-turbo": (0.50, 1.50),
+    }
+    pair = table.get(model)
+    if not pair:
+        return None
+    inp, out = pair
+    return (input_tokens / 1_000_000) * inp + (output_tokens / 1_000_000) * out
+
+
+def estimate_groq_cost_usd(model: str, input_tokens: int, output_tokens: int) -> Optional[float]:
+    """Rough list prices (USD per 1M tokens) — update periodically; None if unknown."""
+    table = {
+        "llama-3.3-70b-versatile": (0.59, 0.79),
+        "llama-3.1-8b-instant": (0.05, 0.08),
+        "llama-3.1-70b-versatile": (0.59, 0.79),
+        "mixtral-8x7b-32768": (0.24, 0.24),
+        "gemma2-9b-it": (0.20, 0.20),
     }
     pair = table.get(model)
     if not pair:

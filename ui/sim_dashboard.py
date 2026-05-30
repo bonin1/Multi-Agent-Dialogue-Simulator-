@@ -18,7 +18,11 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from models.remote_llm import estimate_anthropic_cost_usd, estimate_openai_cost_usd
+from models.remote_llm import (
+    estimate_anthropic_cost_usd,
+    estimate_groq_cost_usd,
+    estimate_openai_cost_usd,
+)
 
 
 def init_extended_session_state() -> None:
@@ -50,6 +54,8 @@ def init_extended_session_state() -> None:
         "huggingface_token": "",
         "openai_model": "gpt-4o-mini",
         "anthropic_model": "claude-3-5-haiku-20241022",
+        "groq_api_key": "",
+        "groq_model": "llama-3.3-70b-versatile",
         "openrouter_api_key": "",
         "openrouter_model": "openai/gpt-4o-mini",
         "openrouter_site_url": "",
@@ -431,7 +437,7 @@ def render_settings_tab() -> None:
         "Keys you type here stay in this browser session only (Streamlit session_state). "
         "For unattended deploys, use environment variables or `.streamlit/secrets.toml` instead."
     )
-    opts = ["local", "openai", "anthropic", "openrouter"]
+    opts = ["local", "openai", "anthropic", "groq", "openrouter"]
     cur = st.session_state.get("llm_backend", "local")
     idx = opts.index(cur) if cur in opts else 0
     st.session_state.llm_backend = st.selectbox("LLM backend", opts, index=idx)
@@ -451,6 +457,18 @@ def render_settings_tab() -> None:
     )
     st.session_state.anthropic_model = st.text_input(
         "Anthropic model id", value=st.session_state.get("anthropic_model", "claude-3-5-haiku-20241022")
+    )
+
+    st.session_state.groq_api_key = st.text_input(
+        "Groq API key",
+        value=st.session_state.get("groq_api_key", ""),
+        type="password",
+        help="From https://console.groq.com/keys — also GROQ_API_KEY env var.",
+    )
+    st.session_state.groq_model = st.text_input(
+        "Groq model id",
+        value=st.session_state.get("groq_model", "llama-3.3-70b-versatile"),
+        help="e.g. llama-3.3-70b-versatile, llama-3.1-8b-instant, mixtral-8x7b-32768",
     )
 
     st.session_state.openrouter_api_key = st.text_input(
@@ -601,6 +619,8 @@ def render_cost_sidebar_note() -> None:
         st.caption("OpenAI pricing is estimated from last response token counts when available.")
     elif backend == "anthropic":
         st.caption("Anthropic pricing is estimated from last response token counts when available.")
+    elif backend == "groq":
+        st.caption("Groq pricing is estimated from last response token counts when available.")
 
 
 def add_cost_from_last_response() -> None:
@@ -616,5 +636,7 @@ def add_cost_from_last_response() -> None:
         cost = estimate_openai_cost_usd(st.session_state.get("openai_model", ""), inp, out)
     elif backend == "anthropic":
         cost = estimate_anthropic_cost_usd(st.session_state.get("anthropic_model", ""), inp, out)
+    elif backend == "groq":
+        cost = estimate_groq_cost_usd(st.session_state.get("groq_model", ""), inp, out)
     if cost is not None:
         st.session_state.total_cost_usd_session = float(st.session_state.get("total_cost_usd_session", 0.0)) + cost
