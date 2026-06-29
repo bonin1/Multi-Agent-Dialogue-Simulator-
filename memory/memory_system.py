@@ -8,17 +8,36 @@ import os
 from datetime import datetime
 import logging
 
+# Shared across all agents — avoids reloading SentenceTransformer for every juror/agent.
+_EMBEDDING_MODEL = None
+_CHROMA_CLIENT = None
+
+
+def _get_embedding_model():
+    global _EMBEDDING_MODEL
+    if _EMBEDDING_MODEL is None:
+        _EMBEDDING_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
+    return _EMBEDDING_MODEL
+
+
+def _get_chroma_client(memory_dir: str):
+    global _CHROMA_CLIENT
+    if _CHROMA_CLIENT is None:
+        os.makedirs(memory_dir, exist_ok=True)
+        _CHROMA_CLIENT = chromadb.PersistentClient(path=memory_dir)
+    return _CHROMA_CLIENT
+
+
 class MemorySystem:
     """Advanced memory system using ChromaDB for vector storage and retrieval"""
     
     def __init__(self, agent_id: str, memory_dir: str = "memory_db"):
         self.agent_id = agent_id
         self.memory_dir = memory_dir
-        self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-        
-        # Initialize ChromaDB
-        os.makedirs(memory_dir, exist_ok=True)
-        self.client = chromadb.PersistentClient(path=memory_dir)
+        self.embedding_model = _get_embedding_model()
+
+        # Initialize ChromaDB (one persistent client for the app)
+        self.client = _get_chroma_client(memory_dir)
         
         # Create collections for different types of memories
         self.conversation_memory = self._get_or_create_collection("conversations")

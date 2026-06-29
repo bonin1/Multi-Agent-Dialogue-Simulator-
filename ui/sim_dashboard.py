@@ -23,6 +23,7 @@ from models.remote_llm import (
     estimate_groq_cost_usd,
     estimate_openai_cost_usd,
 )
+from utils.llm_loader import backend_status_line, hydrate_api_keys_from_secrets_and_env, load_llm_backend, resolve_llm_backend
 
 
 def init_extended_session_state() -> None:
@@ -49,6 +50,7 @@ def init_extended_session_state() -> None:
         "font_scale": 1.0,
         "reduce_motion": False,
         "llm_backend": "local",
+        "llm_backend_user_locked": False,
         "openai_api_key": "",
         "anthropic_api_key": "",
         "huggingface_token": "",
@@ -68,6 +70,7 @@ def init_extended_session_state() -> None:
         "total_cost_usd_session": 0.0,
         "use_fixed_seed": False,
         "run_seed_value": 42,
+        "scenario_prompt_mode": "",
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -284,6 +287,81 @@ def render_lab_tab(scenario_manager) -> None:
         with ev3:
             if st.button("Deadline moved"):
                 _inject_system("Leadership just moved the deadline up by 24 hours.")
+        st.caption("Gov / hospital presets")
+        h1, h2, h3 = st.columns(3)
+        with h1:
+            if st.button("Ambulance surge"):
+                _inject_system(
+                    "Six ambulances arrive at once. Triage reports 2 red, 4 yellow, 2 green. "
+                    "No new ICU beds in the last hour."
+                )
+        with h2:
+            if st.button("Blood O- critical"):
+                _inject_system(
+                    "Blood bank: only 3 units of O-negative remain. Surgery and trauma both "
+                    "requested cross-match for the same patient."
+                )
+        with h3:
+            if st.button("Staff call-out"):
+                _inject_system(
+                    "Three nurses and one anesthesiologist just called out sick. OR schedule "
+                    "may slip by 90 minutes."
+                )
+        p1, p2, p3 = st.columns(3)
+        with p1:
+            if st.button("Leak to media"):
+                _inject_system(
+                    "An opposition-friendly outlet published a leaked draft of the policy. "
+                    "Social media is trending #StopTheProject."
+                )
+        with p2:
+            if st.button("Protest announced"):
+                _inject_system(
+                    "Activists announced a protest at the municipality building Friday at 17:00. "
+                    "Expected turnout: 500+."
+                )
+        with p3:
+            if st.button("Business coalition"):
+                _inject_system(
+                    "The local business chamber issued a joint statement threatening permit "
+                    "slowdowns if fees are not clarified within 48 hours."
+                )
+        st.caption("Mock jury presets")
+        j1, j2, j3 = st.columns(3)
+        with j1:
+            if st.button("Prosecution rebuttal"):
+                _inject_system(
+                    "Prosecution rebuttal: 'Remorse came only after arrest. Cooperation was mandated. "
+                    "The victim's family received payments only when sentencing loomed.' Jurors react."
+                )
+        with j2:
+            if st.button("Witness recants"):
+                _inject_system(
+                    "Breaking: a key eyewitness recants part of testimony. Credibility of both sides shaken."
+                )
+        with j3:
+            if st.button("Judge instruction"):
+                _inject_system(
+                    "Judge instructs jury to ignore the defendant's prior record mentioned in closing. "
+                    "Jurors discuss whether the damage is already done."
+                )
+        st.caption("Disaster relief presets")
+        d1, d2, d3 = st.columns(3)
+        with d1:
+            if st.button("Bridge collapse"):
+                _inject_system(
+                    "Main supply bridge collapsed. Convoys rerouted — add 4 hours. One village cut off entirely."
+                )
+        with d2:
+            if st.button("NGO customs hold"):
+                _inject_system(
+                    "Customs holds 40 tons of ready-to-eat meals for 'documentation review' — ETA 14 hours minimum."
+                )
+        with d3:
+            if st.button("Helicopter diverted"):
+                _inject_system(
+                    "Military diverts the only available helicopter to VIP site visit. NGO medevac request queued."
+                )
 
     with t3:
         st.subheader("Per-agent Chroma memory (read / delete)")
@@ -433,6 +511,16 @@ def render_library_tab() -> None:
 
 def render_settings_tab() -> None:
     st.header("Settings: API keys and model routing")
+    hydrate_api_keys_from_secrets_and_env()
+    status = backend_status_line()
+    if status["connected"]:
+        st.success(f"Connected — backend: **{status['backend']}**")
+    else:
+        st.warning(f"Not connected — backend selected: **{status['backend']}** (click Connect below)")
+    st.info(
+        "**Groq quick start:** 1) LLM backend = **groq**  2) Paste API key  "
+        "3) Click **Connect LLM**  4) Simulation sidebar → select agents → **Create Agents**"
+    )
     st.warning(
         "Keys you type here stay in this browser session only (Streamlit session_state). "
         "For unattended deploys, use environment variables or `.streamlit/secrets.toml` instead."
@@ -440,7 +528,15 @@ def render_settings_tab() -> None:
     opts = ["local", "openai", "anthropic", "groq", "openrouter"]
     cur = st.session_state.get("llm_backend", "local")
     idx = opts.index(cur) if cur in opts else 0
-    st.session_state.llm_backend = st.selectbox("LLM backend", opts, index=idx)
+    picked = st.selectbox("LLM backend", opts, index=idx)
+    if picked != cur:
+        st.session_state.llm_backend_user_locked = True
+    st.session_state.llm_backend = picked
+    if picked == "local" and (
+        (st.session_state.get("groq_api_key") or "").strip()
+        or (st.session_state.get("openai_api_key") or "").strip()
+    ):
+        st.caption("⚠️ **local** downloads ~10GB. You have an API key — **groq** is usually better.")
 
     st.session_state.openai_api_key = st.text_input(
         "OpenAI API key",
@@ -507,6 +603,14 @@ def render_settings_tab() -> None:
     st.session_state.ui_theme = st.selectbox("Theme", ["default", "high_contrast"], index=theme_idx)
     st.session_state.font_scale = st.slider("Font scale", 0.85, 1.4, float(st.session_state.get("font_scale", 1.0)))
     st.session_state.reduce_motion = st.checkbox("Reduce motion (continuous mode may still refresh)", value=st.session_state.get("reduce_motion", False))
+
+    st.divider()
+    if st.button("Connect LLM", type="primary"):
+        st.session_state.model_manager = None
+        if load_llm_backend():
+            st.success("LLM connected — go to **Simulation** and click **Create Agents**.")
+        else:
+            st.error("Connection failed — check backend, API key, and model id.")
 
 
 def render_enhanced_analytics() -> None:

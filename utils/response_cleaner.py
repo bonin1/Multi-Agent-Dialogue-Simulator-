@@ -46,11 +46,20 @@ def clean_dialogue_text(text: str) -> str:
     ):
         return ""
 
-    # Hard cap: spoken dialogue only (max ~2 sentences / ~280 chars)
-    if len(s) > 280:
+    # Collapse mock-jury echo chains ("Yeah, but doesn't...")
+    if re.match(r"^yeah,?\s+but\b", s, flags=re.I):
+        s = re.sub(r"^yeah,?\s+but\s+(doesn't|does not|don't|do not)\s+", "", s, flags=re.I)
+        s = re.sub(r"^yeah,?\s+but\s+", "", s, flags=re.I)
+        s = s.strip()
+        if s:
+            s = s[0].upper() + s[1:]
+
+    # Hard cap: spoken dialogue only (max ~2 sentences / ~280 chars, jury lines may be longer)
+    max_chars = 450 if "REACTION:" in s or "PHRASE:" in s else 280
+    if len(s) > max_chars:
         parts = re.split(r"(?<=[.!?])\s+", s)
-        s = " ".join(parts[:2]).strip()
-        if len(s) > 280:
-            s = s[:277].rsplit(" ", 1)[0] + "…"
+        s = " ".join(parts[:4] if max_chars > 280 else parts[:2]).strip()
+        if len(s) > max_chars:
+            s = s[: max_chars - 1].rsplit(" ", 1)[0] + "…"
 
     return s

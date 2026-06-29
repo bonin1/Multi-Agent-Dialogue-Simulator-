@@ -179,13 +179,14 @@ class Agent:
         prompt = self._build_response_prompt(relevant_memories, context_interpretation, context)
         
         # Generate response using the model with human-like settings
+        is_jury = bool(context and context.get("prompt_mode") == "mock_jury")
         response = self.model_manager.generate_response(
             prompt,
-            max_length=90,
-            temperature=0.72,
-            top_p=0.88,
+            max_length=140 if is_jury else 90,
+            temperature=0.88 if is_jury else 0.72,
+            top_p=0.92 if is_jury else 0.88,
             do_sample=True,
-            repetition_penalty=1.35,
+            repetition_penalty=1.45 if is_jury else 1.35,
         )
 
         # Clean up response formatting
@@ -250,6 +251,11 @@ class Agent:
             'conversation_flow': context.get('conversation_flow', False),
             'last_speaker': context.get('last_speaker', None),
             'last_message': context.get('last_message', None),
+            'prompt_mode': context.get('prompt_mode', ''),
+            'background_story': self.background_story or '',
+            'defense_argument': context.get('defense_argument', ''),
+            'goals': list(self.state.goals) if self.state.goals else [],
+            'prompt_lab_system': context.get('prompt_lab_system', '') if context else '',
         }
         if context and context.get("research_brief"):
             enhanced_context["research_brief"] = context["research_brief"]

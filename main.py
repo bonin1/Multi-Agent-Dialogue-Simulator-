@@ -1,5 +1,6 @@
 import logging
 import json
+import os
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 import traceback
@@ -20,13 +21,6 @@ logging.basicConfig(level=logging.INFO)
 
 # Import custom modules (with fallback handling)
 try:
-    from models.model_manager import ModelManager
-    from models.remote_llm import (
-        AnthropicChatBackend,
-        GroqChatBackend,
-        OpenAIChatBackend,
-        OpenRouterChatBackend,
-    )
     from agents.agent import Agent
     from models.agent_models import AgentRole, PersonalityTrait, EmotionalState, EmotionType
     from scenarios.scenario_manager import ScenarioManager, AGENT_CONFIGS, SCENARIOS
@@ -55,6 +49,7 @@ try:
         handle_moderator_research_command,
     )
     from ui.session_controls import render_reset_buttons
+    from utils.llm_loader import hydrate_api_keys_from_secrets_and_env, load_llm_backend, resolve_llm_backend
 except ImportError as e:
     print(f"Error importing modules: {e}", flush=True)
     print("Install dependencies: pip install -r requirements.txt", flush=True)
@@ -83,6 +78,8 @@ st.set_page_config(
 )
 
 init_extended_session_state()
+hydrate_api_keys_from_secrets_and_env()
+resolve_llm_backend(show_hint=False)
 try:
     from ui.research_ui import init_research_session_state
     init_research_session_state()
@@ -112,86 +109,13 @@ if 'auto_turn_interval' not in st.session_state:
 
 def load_model():
     """Load local HF model or configure a remote API backend (BYOK)."""
-    import os
-
-    try:
-        try:
-            secrets = getattr(st, "secrets", None)
-            if secrets and "HUGGING_FACE_HUB_TOKEN" in secrets:
-                os.environ["HUGGING_FACE_HUB_TOKEN"] = secrets["HUGGING_FACE_HUB_TOKEN"]
-        except Exception:
-            pass
-
-        hf_ui = (st.session_state.get("huggingface_token") or "").strip()
-        if hf_ui:
-            os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_ui
-
+    ok = load_llm_backend()
+    if ok:
         backend = st.session_state.get("llm_backend", "local")
-
-        if backend == "openai":
-            key = (st.session_state.get("openai_api_key") or os.environ.get("OPENAI_API_KEY") or "").strip()
-            if not key:
-                st.error("OpenAI API key required (Settings tab or OPENAI_API_KEY env).")
-                return False
-            with st.spinner("Connecting to OpenAI…"):
-                st.session_state.model_manager = OpenAIChatBackend(
-                    key, st.session_state.get("openai_model", "gpt-4o-mini")
-                )
-            log_run("Model backend: OpenAI")
-            return True
-
-        if backend == "anthropic":
-            key = (st.session_state.get("anthropic_api_key") or os.environ.get("ANTHROPIC_API_KEY") or "").strip()
-            if not key:
-                st.error("Anthropic API key required (Settings tab or ANTHROPIC_API_KEY env).")
-                return False
-            with st.spinner("Connecting to Anthropic…"):
-                st.session_state.model_manager = AnthropicChatBackend(
-                    key, st.session_state.get("anthropic_model", "claude-3-5-haiku-20241022")
-                )
-            log_run("Model backend: Anthropic")
-            return True
-
-        if backend == "openrouter":
-            key = (
-                st.session_state.get("openrouter_api_key")
-                or os.environ.get("OPENROUTER_API_KEY")
-                or ""
-            ).strip()
-            if not key:
-                st.error("OpenRouter API key required (Settings tab or OPENROUTER_API_KEY env).")
-                return False
-            with st.spinner("Connecting to OpenRouter…"):
-                st.session_state.model_manager = OpenRouterChatBackend(
-                    key,
-                    st.session_state.get("openrouter_model", "openai/gpt-4o-mini"),
-                    site_url=st.session_state.get("openrouter_site_url", ""),
-                    site_name=st.session_state.get("openrouter_site_name", "Multi-Agent Dialogue Simulator"),
-                )
-            log_run("Model backend: OpenRouter")
-            return True
-
-        if backend == "groq":
-            key = (st.session_state.get("groq_api_key") or os.environ.get("GROQ_API_KEY") or "").strip()
-            if not key:
-                st.error("Groq API key required (Settings tab or GROQ_API_KEY env).")
-                return False
-            with st.spinner("Connecting to Groq…"):
-                st.session_state.model_manager = GroqChatBackend(
-                    key, st.session_state.get("groq_model", "llama-3.3-70b-versatile")
-                )
-            log_run("Model backend: Groq")
-            return True
-
-        with st.spinner("Loading AI model… This may take a few minutes."):
-            model_id = st.session_state.get("local_model_name", "teknium/OpenHermes-2.5-Mistral-7B")
-            st.session_state.model_manager = ModelManager(model_id)
-        log_run(f"Model backend: local HF ({model_id})")
-        return True
-    except Exception as e:
-        st.error(f"Error loading model: {e}")
-        log_run(str(e), "error")
-        return False
+        log_run(f"Model backend: {backend}")
+    else:
+        log_run("LLM connection failed", "error")
+    return ok
 
 def create_agent(name: str, config: Dict[str, Any]) -> Optional[Agent]:
     """Create an agent from configuration"""
@@ -364,6 +288,10 @@ def show_simulation_interface():
                         st.error(last["error"])
         else:
             st.warning("⚠️ Model not loaded")
+            st.caption(
+                "For Groq: **Settings** → backend **groq** → paste API key → "
+                "**Connect LLM** (or click **Load AI Model** here). Then select agents → **Create Agents**."
+            )
         
         rb = get_research_brief()
         if rb:
@@ -387,6 +315,20 @@ def show_simulation_interface():
                 st.success("Free-form mode — no scripted scenario. Set a topic under Live Research or below.")
             else:
                 st.session_state.scenario_manager.set_scenario(selected_scenario)
+                presets = st.session_state.scenario_manager.get_scenario_presets(selected_scenario)
+                if presets.get("default_win_goals"):
+                    st.session_state.win_goals = [
+                        {"text": g, "done": False} for g in presets["default_win_goals"]
+                    ]
+                if presets.get("research_topic_hint"):
+                    st.session_state.freeform_topic = presets["research_topic_hint"]
+                if presets.get("director_note"):
+                    st.session_state.prompt_lab_system = presets["director_note"]
+                if presets.get("prompt_mode"):
+                    st.session_state.scenario_prompt_mode = presets["prompt_mode"]
+                if presets.get("disable_auto_research"):
+                    st.session_state.research_brief = None
+                    st.session_state.auto_research_on_start = False
                 st.success(f"Scenario set: {selected_scenario}")
 
         st.session_state.freeform_topic = st.text_input(
@@ -401,6 +343,18 @@ def show_simulation_interface():
             with st.expander("Current Scenario", expanded=True):
                 st.write(f"**Phase {current_context['phase_number']}/{current_context['total_phases']}:** {current_context['current_phase']}")
                 st.write(current_context['scenario_description'])
+                if current_context.get('target_users'):
+                    st.write(f"**Who uses this:** {current_context['target_users']}")
+                if current_context.get('value_proposition'):
+                    st.write(f"**Why it matters:** {current_context['value_proposition']}")
+                if current_context.get('scenario_context'):
+                    st.caption(current_context['scenario_context'])
+                if current_context.get('default_win_goals'):
+                    st.write("**Checklist goals (see Lab → Win goals):**")
+                    for g in current_context['default_win_goals']:
+                        st.write(f"• {g}")
+                if current_context.get('agent_selection_note'):
+                    st.info(current_context['agent_selection_note'])
         
         st.divider()
         
@@ -424,6 +378,9 @@ def show_simulation_interface():
         all_scenarios = st.session_state.scenario_manager.get_available_scenarios()
         if selected_scenario != NO_SCENARIO_LABEL and selected_scenario in all_scenarios:
             suggested_agents = all_scenarios[selected_scenario].get('suggested_agents', [])
+            note = all_scenarios[selected_scenario].get('agent_selection_note')
+            if note:
+                st.info(note)
             st.write("**Suggested agents for this scenario:**")
             for agent in suggested_agents:
                 agent_type = "predefined" if agent in AGENT_CONFIGS else "custom" if agent in all_available_agents else "missing"
@@ -456,7 +413,11 @@ def show_simulation_interface():
             selected_agents = st.multiselect(
                 "Select Agents (2-5 recommended)",
                 available_agent_names,
-                default=all_scenarios[selected_scenario].get('suggested_agents', [])[:3] if selected_scenario in all_scenarios else []
+                default=(
+                    all_scenarios[selected_scenario].get('suggested_agents', [])
+                    if selected_scenario != NO_SCENARIO_LABEL and selected_scenario in all_scenarios
+                    else []
+                )
             )
         
         # Show selected agents info
@@ -476,12 +437,27 @@ def show_simulation_interface():
                 
                 st.write(f"  • {agent_type} {agent_name} ({role})")
         
-        if st.button("Create Agents") and st.session_state.model_manager and selected_agents:
-            st.session_state.agents = {}
-            success_count = 0
-            
-            with st.spinner("Creating agents..."):
-                for agent_name in selected_agents:
+        create_agents_clicked = st.button("Create Agents", type="primary")
+        if create_agents_clicked:
+            if not selected_agents:
+                st.error("Select at least one agent in the list above.")
+            elif not st.session_state.model_manager:
+                st.info("LLM not connected yet — connecting now…")
+                if not load_model():
+                    st.error(
+                        "Could not connect. Open **Settings** → set **LLM backend** to **groq**, "
+                        "paste your Groq key, click **Connect LLM**, then try again."
+                    )
+            if st.session_state.model_manager and selected_agents:
+                st.session_state.agents = {}
+                success_count = 0
+                n_agents = len(selected_agents)
+                progress = st.progress(0.0, text="Preparing agents (loading memory models once)…")
+                for i, agent_name in enumerate(selected_agents):
+                    progress.progress(
+                        (i + 1) / n_agents,
+                        text=f"Creating agent {i + 1}/{n_agents}: {agent_name}…",
+                    )
                     agent_config = all_available_agents[agent_name]
                     agent = create_agent_from_config(agent_name, agent_config)
                     if agent:
@@ -489,20 +465,21 @@ def show_simulation_interface():
                         success_count += 1
                     else:
                         st.error(f"Failed to create agent: {agent_name}")
-            
-            if success_count > 0:
-                st.success(f"✅ Created {success_count} agents successfully!")
-                snapshots = {}
-                for name, ag in st.session_state.agents.items():
-                    summ = ag.get_agent_summary()
-                    snapshots[name] = {
-                        "personality": summ.get("personality"),
-                        "role": summ.get("role"),
-                        "goals": summ.get("goals", []),
-                    }
-                st.session_state.agent_persona_snapshots = snapshots
-            else:
-                st.error("❌ No agents were created successfully")
+                progress.empty()
+
+                if success_count > 0:
+                    st.success(f"✅ Created {success_count} agents successfully!")
+                    snapshots = {}
+                    for name, ag in st.session_state.agents.items():
+                        summ = ag.get_agent_summary()
+                        snapshots[name] = {
+                            "personality": summ.get("personality"),
+                            "role": summ.get("role"),
+                            "goals": summ.get("goals", []),
+                        }
+                    st.session_state.agent_persona_snapshots = snapshots
+                else:
+                    st.error("❌ No agents were created successfully")
         
         if st.session_state.agents:
             st.divider()
@@ -605,10 +582,17 @@ def show_simulation_interface():
                     })
                     # Live research before debate
                     try:
+                        disable_research = bool(current_context.get("disable_auto_research"))
                         need_research = (
-                            not current_context
-                            and st.session_state.get("auto_research_no_scenario", True)
-                        ) or st.session_state.get("auto_research_on_start")
+                            not disable_research
+                            and (
+                                (
+                                    not current_context
+                                    and st.session_state.get("auto_research_no_scenario", True)
+                                )
+                                or st.session_state.get("auto_research_on_start")
+                            )
+                        )
                         if need_research:
                             topic = (
                                 st.session_state.get("research_topic")
@@ -841,6 +825,31 @@ def show_simulation_interface():
                         )
                         st.plotly_chart(fig, use_container_width=True)
 
+def _extract_defense_argument_from_history() -> str:
+    """System messages with case brief / defense closing for mock-jury runs."""
+    chunks: List[str] = []
+    for entry in st.session_state.get("conversation_history", []):
+        if entry.get("speaker") != "System":
+            continue
+        msg = str(entry.get("message", "")).strip()
+        if not msg or msg.startswith("📡 LIVE RESEARCH"):
+            continue
+        low = msg.lower()
+        if any(
+            k in low
+            for k in (
+                "defense",
+                "closing",
+                "juror",
+                "fictional case",
+                "state v.",
+                "prosecution",
+            )
+        ):
+            chunks.append(msg)
+    return "\n\n".join(chunks)[:2400]
+
+
 def simulate_turn():
     """Simulate one turn of conversation"""
     if not st.session_state.agents:
@@ -892,9 +901,12 @@ def simulate_turn():
         "turn_count": st.session_state.turn_count,
         "prompt_lab_system": st.session_state.get("prompt_lab_system", ""),
         "prompt_lab_style": st.session_state.get("prompt_lab_style", ""),
+        "prompt_mode": ctx.get("prompt_mode") or st.session_state.get("scenario_prompt_mode", ""),
+        "defense_argument": _extract_defense_argument_from_history(),
     }
+    disable_research = bool(ctx.get("disable_auto_research"))
     brief = get_research_brief()
-    if brief is not None:
+    if brief is not None and not disable_research:
         context["research_brief"] = brief.to_context_block(max_chars=1800)
 
     try:

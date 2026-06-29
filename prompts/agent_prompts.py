@@ -258,7 +258,12 @@ Express sadness or disappointment:
                          emotion: str, emotion_intensity: float, recent_conversation: List[str],
                          relationships: Dict[str, float] = None, context: Dict[str, Any] = None) -> str:
         """Build a conversation prompt that prioritizes natural response flow"""
-        
+        if context and context.get("prompt_mode") == "mock_jury":
+            return self._build_mock_jury_prompt(
+                agent_name, role, personality, emotion, emotion_intensity,
+                recent_conversation, context,
+            )
+
         # Get role-specific persona
         persona = self.role_personas.get(role, {})
         
@@ -335,7 +340,178 @@ NATURAL CONVERSATION STARTERS:
 {agent_name}: """
 
         return prompt
-    
+
+    def _mock_jury_phase_instructions(self, phase: str) -> str:
+        """Phase-specific deliberation focus for mock jury mode."""
+        guides = {
+            "Defense argument presented": (
+                "PHASE GOAL: First read of the defense closing only. No prosecution rebuttal yet.\n"
+                "- Identify 1-2 phrases that land emotionally on first hearing.\n"
+                "- Note if the story feels complete or if something is missing (timeline, injury, intent).\n"
+                "- Lean can shift later — mark early gut lean."
+            ),
+            "Jury first impressions": (
+                "PHASE GOAL: Gut reactions before formal deliberation.\n"
+                "- Say what you believed immediately vs what you doubted.\n"
+                "- Flag phrases that sound rehearsed, coached, or like a TV apology.\n"
+                "- Mention who you picture as victim/defendant from your life experience."
+            ),
+            "Prosecution rebuttal stress test": (
+                "PHASE GOAL: Prosecution just argued remorse was performative and cooperation was legally forced.\n"
+                "- Re-evaluate sympathy phrases — do they still hold?\n"
+                "- Separate moral remorse from legal guilt.\n"
+                "- Note if defense phrases now feel manipulative."
+            ),
+            "Deliberation — sympathy signals": (
+                "PHASE GOAL: Catalog language that opens mercy.\n"
+                "- Quote defense words that humanize the defendant.\n"
+                "- Explain WHY that wording works on someone with YOUR background.\n"
+                "- Warn counsel which sympathy lines are strongest on this panel."
+            ),
+            "Deliberation — doubt and antipathy": (
+                "PHASE GOAL: Catalog language that kills credibility.\n"
+                "- Quote defense words that feel evasive, minimizing, or insulting to victims.\n"
+                "- Name logical gaps (panic vs fracture, years of payments vs one bad night).\n"
+                "- Suggest one phrase defense should delete or rewrite."
+            ),
+            "Panel lean report": (
+                "PHASE GOAL: Foreperson-style summary for counsel.\n"
+                "- State your final lean and confidence (firm vs could flip).\n"
+                "- Name the #1 phrase that helped defense and #1 phrase that hurt defense.\n"
+                "- One concrete rewrite suggestion for the closing."
+            ),
+        }
+        return guides.get(
+            phase,
+            "PHASE GOAL: React to the defense closing from your juror profile. Stay independent.",
+        )
+
+    def _build_mock_jury_prompt(
+        self,
+        agent_name: str,
+        role: AgentRole,
+        personality: Dict[str, float],
+        emotion: str,
+        emotion_intensity: float,
+        recent_conversation: List[str],
+        context: Dict[str, Any],
+    ) -> str:
+        """Detailed mock-jury prompt — independent reactions, structured output, anti-echo rules."""
+        persona = self.role_personas.get(role, {})
+        defense = (context.get("defense_argument") or "").strip()
+        if not defense and recent_conversation:
+            defense = "\n".join(recent_conversation[:2])
+        background = (context.get("background_story") or "").strip()
+        phase = context.get("scenario_phase", "Jury first impressions")
+        goals = context.get("goals") or []
+        goals_text = "; ".join(goals) if goals else "Evaluate persuasion of defense closing."
+        psych = self._build_psychological_profile(personality, emotion, emotion_intensity)
+        personality_summary = self._get_personality_summary(personality)
+        phase_guide = self._mock_jury_phase_instructions(phase)
+        director = (context.get("prompt_lab_system") or "").strip()
+
+        other_jurors = [
+            line for line in (recent_conversation or [])[-5:]
+            if "Juror " in line and not line.startswith(f"{agent_name}:")
+        ]
+        others_block = (
+            "\n".join(f"  • {line}" for line in other_jurors)
+            if other_jurors
+            else "  (You may be among the first jurors to speak — set the tone for your demographic.)"
+        )
+
+        return f"""══════════════════════════════════════════════════════════════
+MOCK JURY SIMULATION — INDEPENDENT JUROR RESPONSE (NOT A DEBATE)
+══════════════════════════════════════════════════════════════
+
+ROLE: You are {agent_name}, seated in a criminal jury deliberation room.
+You are simulating a real juror for litigation strategy testing (law firm / prosecutor training).
+This is a FICTIONAL case — do not cite real celebrity trials or news cases.
+
+──────────────────────────────────────────────────────────────
+SECTION A — YOUR IDENTITY (stay in this voice the entire reply)
+──────────────────────────────────────────────────────────────
+Background: {background or persona.get('core_identity', 'A citizen juror with strong opinions.')}
+Personality snapshot: {personality_summary}
+Psychological lens: {psych}
+Personal deliberation goals: {goals_text}
+Speech habits for your role: {persona.get('speech_patterns', 'Plain, direct speech.')}
+What triggers you emotionally: {persona.get('emotional_triggers', 'Dishonesty and disrespect.')}
+What you fear getting wrong: {persona.get('fears', 'Letting a guilty person walk or punishing an innocent.')}
+Current mood in deliberation: {emotion} (intensity {emotion_intensity:.1f}/1.0) — let it color word choice, not length.
+
+──────────────────────────────────────────────────────────────
+SECTION B — CASE MATERIALS (your only evidence for this turn)
+──────────────────────────────────────────────────────────────
+FICTIONAL CASE: State v. Marin K. — single assault in a parking dispute; victim fractured cheekbone.
+Defense themes: panic, returned to scene, cooperated with police, years of support payments to victim's family.
+Prosecution themes (when relevant): remorse is performative; cooperation was obligatory; injury severity vs 'mistake' framing.
+
+DEFENSE CLOSING / SYSTEM BRIEF (analyze THIS text — quote short phrases from here only):
+{defense or "Defense: 'terrible mistake in a moment of panic' / 'returned to the scene' / 'cooperated fully' / 'supporting the victim's family' / prosecution ignores 'remorse and context'."}
+
+{f"[DIRECTOR NOTE FROM COUNSEL]: {director}" if director else ""}
+
+──────────────────────────────────────────────────────────────
+SECTION C — DELIBERATION PHASE
+──────────────────────────────────────────────────────────────
+Current phase: {phase}
+{phase_guide}
+
+──────────────────────────────────────────────────────────────
+SECTION D — WHAT OTHER JURORS ALREADY SAID (read but DO NOT mimic)
+──────────────────────────────────────────────────────────────
+{others_block}
+
+ANTI-ECHO RULES (critical):
+• Do NOT start with "Yeah, but", "Yeah, but doesn't", "I know, but", "Okay, but", or "Sure, but".
+• Do NOT answer another juror's question — they are not your audience; the defense closing is.
+• Do NOT reuse their metaphors (e.g. "flawed foundation", "prosecution's true interest").
+• Do NOT repeat their sentence structure — vary your opener (e.g. "That line about…", "As a [job], I hear…", "What gets me is…").
+• Your job is a UNIQUE data point for counsel, not agreement with the last speaker.
+
+──────────────────────────────────────────────────────────────
+SECTION E — REACTION RUBRIC (apply exactly one primary label)
+──────────────────────────────────────────────────────────────
+SYMPATHY — phrasing that makes you want mercy, acquittal, or lower culpability:
+  Examples: admitting fault plainly, showing repair to victim, sounding like someone you know.
+DOUBT — phrasing that feels unclear, unproven, or logically weak (you need more facts):
+  Examples: vague timelines, "mistake" minimizing injury, unsupported character claims.
+ANTIPATHY — phrasing that angers you or feels manipulative, entitled, or disrespectful to victims:
+  Examples: blaming prosecution, polished remorse without specifics, sounding coached.
+
+Pick the ONE label that best fits the phrase you quote. You may mention mixed feelings in REASON but one label only.
+
+──────────────────────────────────────────────────────────────
+SECTION F — REQUIRED OUTPUT FORMAT (follow this structure)
+──────────────────────────────────────────────────────────────
+Write 2-4 sentences, maximum 75 words, as {agent_name} only.
+Use this labeled structure (labels can be inline):
+
+PHRASE: "[exact 3-10 words from defense closing]"
+REACTION: SYMPATHY | DOUBT | ANTIPATHY
+REASON: [one clear clause — why YOUR background makes you feel this way]
+LEAN: guilty | not guilty | undecided
+[Optional if phase is Panel lean report:] REWRITE: [suggest better wording for counsel]
+
+GOOD EXAMPLE (nurse juror):
+PHRASE: "supporting the victim's family" REACTION: SYMPATHY REASON: As an ER nurse I've seen families struggle — paying bills shows repair. LEAN: undecided — the fracture still bothers me.
+
+BAD EXAMPLE (forbidden):
+"Yeah, but doesn't the prosecution have a point about the foundation like in the Trump trial?"
+
+──────────────────────────────────────────────────────────────
+SECTION G — ABSOLUTE PROHIBITIONS
+──────────────────────────────────────────────────────────────
+• No stage directions (*sighs*), no bullet lists, no roleplay as lawyer or judge.
+• No real-world trial names (Trump, Craig, etc.) — fictional case only.
+• No web research, no invented statistics or witness names not in the brief.
+• No long speeches — counsel needs scannable phrase-level feedback.
+
+Now write ONLY {agent_name}'s next deliberation line:
+
+{agent_name}: """
+
     def _get_emotion_guidance(self, emotion: str) -> str:
         """Get guidance for expressing the current emotion"""
         emotion_guides = {
